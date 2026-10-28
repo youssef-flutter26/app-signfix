@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- SignFix launcher icon background: dark navy -->
+    <color name="ic_launcher_background">#0F1B3D</color>
+    <color name="splash_background">#F4F6FA</color>
+</resources>
