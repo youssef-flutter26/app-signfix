@@ -30,13 +30,12 @@ Future<void> _firebaseBackgroundHandler(RemoteMessage message) async {
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  // Firebase init — gracefully skip if google-services.json not configured
-  try {
-    await Firebase.initializeApp();
-    FirebaseMessaging.onBackgroundMessage(_firebaseBackgroundHandler);
-  } catch (_) {
-    // Firebase not configured — push notifications disabled, app works normally
-  }
+
+  // التهيئة التلقائية المعتمدة على ملف google-services.json
+  await Firebase.initializeApp();
+
+  FirebaseMessaging.onBackgroundMessage(_firebaseBackgroundHandler);
+
   runApp(const SignFixApp());
 }
 
@@ -80,7 +79,11 @@ class _SignFixAppState extends State<SignFixApp> {
     try {
       final messaging = FirebaseMessaging.instance;
       // Request permission (Android 13+ and iOS)
-      await messaging.requestPermission(alert: true, badge: true, sound: true);
+      await messaging.requestPermission(
+        alert: true,
+        badge: true,
+        sound: true,
+      );
       final fcmToken = await messaging.getToken();
       if (fcmToken != null) {
         // Register token with backend for whichever portal is logged in
@@ -113,12 +116,20 @@ class _SignFixAppState extends State<SignFixApp> {
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(notification.title ?? 'SignFix',
-                      style: const TextStyle(
-                          fontWeight: FontWeight.w800, color: AppColors.white)),
+                  Text(
+                    notification.title ?? 'SignFix',
+                    style: const TextStyle(
+                      fontWeight: FontWeight.w800,
+                      color: AppColors.white,
+                    ),
+                  ),
                   if (notification.body != null)
-                    Text(notification.body!,
-                        style: const TextStyle(color: AppColors.white70)),
+                    Text(
+                      notification.body!,
+                      style: const TextStyle(
+                        color: AppColors.white70,
+                      ),
+                    ),
                 ],
               ),
               backgroundColor: AppColors.navyDark,
@@ -184,7 +195,6 @@ class _SignFixAppState extends State<SignFixApp> {
       setState(() => _selectedPortal = portal);
 
   Future<void> _logout() async {
-    // Unregister FCM token before logout
     try {
       final fcmToken = await FirebaseMessaging.instance.getToken();
       if (fcmToken != null) {
@@ -197,16 +207,13 @@ class _SignFixAppState extends State<SignFixApp> {
       }
     } catch (_) {}
 
-    // 1. Clear tokens
     await _customerApi.logout();
     await _technicianApi.logout();
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove('last_portal');
 
-    // 2. Pop ALL pushed routes
     _navigatorKey.currentState?.popUntil((route) => route.isFirst);
 
-    // 3. Rebuild root → now shows portal selection
     if (mounted) {
       setState(() {
         _selectedPortal = null;
@@ -216,7 +223,7 @@ class _SignFixAppState extends State<SignFixApp> {
 
   @override
   Widget build(BuildContext context) => MaterialApp(
-        navigatorKey: _navigatorKey, // ✅ global key
+        navigatorKey: _navigatorKey,
         debugShowCheckedModeBanner: false,
         title: 'SignFix',
         theme: buildAppTheme(),
@@ -224,15 +231,19 @@ class _SignFixAppState extends State<SignFixApp> {
       );
 
   Widget _buildHome() {
-    // Already logged in
     if (_customerApi.token != null) {
-      return CustomerHome(api: _customerApi, onLogout: _logout);
+      return CustomerHome(
+        api: _customerApi,
+        onLogout: _logout,
+      );
     }
     if (_technicianApi.token != null) {
-      return AppShell(api: _technicianApi, onLogout: _logout);
+      return AppShell(
+        api: _technicianApi,
+        onLogout: _logout,
+      );
     }
 
-    // Portal selected → login screen
     if (_selectedPortal == PortalType.customer) {
       return cust_auth.LoginScreen(
         api: _customerApi,
@@ -248,38 +259,44 @@ class _SignFixAppState extends State<SignFixApp> {
       );
     }
 
-    // No session → portal selection
     return PortalSelectionScreen(onSelect: _onPortalSelect);
   }
 }
 
-// ── Splash ─────────────────────────────────────────────────────────────────────
 class _SplashScreen extends StatelessWidget {
   const _SplashScreen();
   @override
   Widget build(BuildContext context) => Scaffold(
         backgroundColor: AppColors.splashBg,
         body: Center(
-          child: Column(mainAxisSize: MainAxisSize.min, children: [
-            Container(
-              width: 90,
-              height: 90,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                boxShadow: [
-                  BoxShadow(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 90,
+                height: 90,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  boxShadow: [
+                    BoxShadow(
                       color: AppColors.gold.withValues(alpha: .3),
-                      blurRadius: 24)
-                ],
+                      blurRadius: 24,
+                    )
+                  ],
+                ),
+                child: ClipOval(
+                  child: Image.asset(
+                    'assets/images/logo.jpeg',
+                    fit: BoxFit.cover,
+                  ),
+                ),
               ),
-              child: ClipOval(
-                child:
-                    Image.asset('assets/images/logo.jpeg', fit: BoxFit.cover),
+              const SizedBox(height: 24),
+              const CircularProgressIndicator(
+                color: AppColors.gold,
               ),
-            ),
-            const SizedBox(height: 24),
-            const CircularProgressIndicator(color: AppColors.gold),
-          ]),
+            ],
+          ),
         ),
       );
 }

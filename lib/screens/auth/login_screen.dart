@@ -1,10 +1,10 @@
 import 'package:flutter/material.dart';
 import '../../core/app_theme.dart';
 import '../../services/api_client.dart';
+import '../../services/auth_service.dart';
 import '../../widgets/common.dart';
 import 'register_screen.dart';
 import 'forgot_password_screen.dart';
-
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({
@@ -21,22 +21,27 @@ class LoginScreen extends StatefulWidget {
 }
 
 class _LoginScreenState extends State<LoginScreen> {
-  final _email    = TextEditingController();
+  final _email = TextEditingController();
   final _password = TextEditingController();
-  bool _loading   = false;
-  bool _obscure   = true;
+  bool _loading = false;
+  bool _googleLoading = false;
+  bool _obscure = true;
   String? _error;
   String? _emailError;
   String? _passwordError;
   bool _showRegister = false;
 
   @override
-  void dispose() { _email.dispose(); _password.dispose(); super.dispose(); }
+  void dispose() {
+    _email.dispose();
+    _password.dispose();
+    super.dispose();
+  }
 
   Future<void> _submit() async {
     FocusScope.of(context).unfocus();
     final email = _email.text.trim();
-    final pass  = _password.text;
+    final pass = _password.text;
 
     setState(() {
       _emailError = null;
@@ -45,19 +50,27 @@ class _LoginScreenState extends State<LoginScreen> {
     });
 
     if (email.isEmpty) {
-      setState(() => _emailError = 'Please enter your email address.'); return;
+      setState(() => _emailError = 'Please enter your email address.');
+      return;
     }
     if (!email.contains('@') || !email.contains('.')) {
-      setState(() => _emailError = 'Please enter a valid email address.'); return;
+      setState(() => _emailError = 'Please enter a valid email address.');
+      return;
     }
     if (pass.isEmpty) {
-      setState(() => _passwordError = 'Please enter your password.'); return;
+      setState(() => _passwordError = 'Please enter your password.');
+      return;
     }
     if (pass.length < 6) {
-      setState(() => _passwordError = 'Password must be at least 6 characters.'); return;
+      setState(
+          () => _passwordError = 'Password must be at least 6 characters.');
+      return;
     }
 
-    setState(() { _loading = true; _error = null; });
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
     try {
       await widget.api.login(email, pass);
       widget.onAuthenticated();
@@ -98,6 +111,32 @@ class _LoginScreenState extends State<LoginScreen> {
     }
   }
 
+  Future<void> _handleGoogleSignIn() async {
+    FocusScope.of(context).unfocus();
+    setState(() {
+      _googleLoading = true;
+      _error = null;
+    });
+    try {
+      await AuthService.signInWithGoogle(role: 'customer');
+      if (mounted) {
+        widget.onAuthenticated();
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _error = e.toString().replaceAll('Exception: ', '');
+        });
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _googleLoading = false;
+        });
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_showRegister) {
@@ -120,157 +159,228 @@ class _LoginScreenState extends State<LoginScreen> {
         if (!didPop) widget.onBack?.call();
       },
       child: Scaffold(
-      backgroundColor: AppColors.softGray,
-      appBar: AppBar(
-        backgroundColor: AppColors.navy,
-        leading: widget.onBack != null
-            ? IconButton(
-                icon: const Icon(Icons.arrow_back_ios_rounded, color: AppColors.gold),
-                onPressed: widget.onBack,
-              )
-            : null,
-        title: Row(children: [
-          ClipRRect(
-            borderRadius: BorderRadius.circular(8),
-            child: Image.asset('assets/images/logo.jpeg', width: 30, height: 30, fit: BoxFit.cover),
-          ),
-          const SizedBox(width: 8),
-          RichText(text: const TextSpan(children: [
-            TextSpan(text: 'Sign', style: TextStyle(color: AppColors.white, fontSize: 16, fontWeight: FontWeight.w900)),
-            TextSpan(text: 'Fix', style: TextStyle(color: AppColors.gold, fontSize: 16, fontWeight: FontWeight.w900)),
-          ])),
-        ]),
-        elevation: 0,
-      ),
-      body: SafeArea(
-        child: Center(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.all(24),
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 430),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  // Logo
-                  Center(
-                    child: Container(
-                      width: 90, height: 90,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        boxShadow: [BoxShadow(color: AppColors.gold.withValues(alpha: .3), blurRadius: 20)],
-                      ),
-                      child: ClipOval(
-                        child: Image.asset('assets/images/logo.jpeg', fit: BoxFit.cover),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 20),
-
-                  const Text('Customer Login',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(fontSize: 24, fontWeight: FontWeight.w900, color: AppColors.navy)),
-                  const SizedBox(height: 6),
-                  const Text('Order sign boards, request service\nand track every update.',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(color: AppColors.textLight, height: 1.4, fontSize: 13)),
-                  const SizedBox(height: 28),
-
-                  TextField(
-                    controller: _email,
-                    keyboardType: TextInputType.emailAddress,
-                    textInputAction: TextInputAction.next,
-                    style: const TextStyle(color: AppColors.charcoal),
-                    decoration: InputDecoration(
-                      labelText: 'Email address',
-                      prefixIcon: const Icon(Icons.mail_outline),
-                      errorText: _emailError,
-                    ),
-                    onChanged: (_) {
-                      if (_emailError != null || _error != null) {
-                        setState(() {
-                          _emailError = null;
-                          _error = null;
-                        });
-                      }
-                    },
-                  ),
-                  const SizedBox(height: 12),
-                  TextField(
-                    controller: _password,
-                    obscureText: _obscure,
-                    onSubmitted: (_) => _submit(),
-                    style: const TextStyle(color: AppColors.charcoal),
-                    decoration: InputDecoration(
-                      labelText: 'Password',
-                      prefixIcon: const Icon(Icons.lock_outline),
-                      errorText: _passwordError,
-                      suffixIcon: IconButton(
-                        icon: Icon(
-                          _obscure ? Icons.visibility_outlined : Icons.visibility_off_outlined,
-                          color: AppColors.gold,
+        backgroundColor: AppColors.softGray,
+        appBar: AppBar(
+          backgroundColor: AppColors.navy,
+          leading: widget.onBack != null
+              ? IconButton(
+                  icon: const Icon(Icons.arrow_back_ios_rounded,
+                      color: AppColors.gold),
+                  onPressed: widget.onBack,
+                )
+              : null,
+          title: Row(children: [
+            ClipRRect(
+              borderRadius: BorderRadius.circular(8),
+              child: Image.asset('assets/images/logo.jpeg',
+                  width: 30, height: 30, fit: BoxFit.cover),
+            ),
+            const SizedBox(width: 8),
+            RichText(
+                text: const TextSpan(children: [
+              TextSpan(
+                  text: 'Sign',
+                  style: TextStyle(
+                      color: AppColors.white,
+                      fontSize: 16,
+                      fontWeight: FontWeight.w900)),
+              TextSpan(
+                  text: 'Fix',
+                  style: TextStyle(
+                      color: AppColors.gold,
+                      fontSize: 16,
+                      fontWeight: FontWeight.w900)),
+            ])),
+          ]),
+          elevation: 0,
+        ),
+        body: SafeArea(
+          child: Center(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.all(24),
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 430),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    // Logo
+                    Center(
+                      child: Container(
+                        width: 90,
+                        height: 90,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          boxShadow: [
+                            BoxShadow(
+                                color: AppColors.gold.withValues(alpha: .3),
+                                blurRadius: 20)
+                          ],
                         ),
-                        onPressed: () => setState(() => _obscure = !_obscure),
+                        child: ClipOval(
+                          child: Image.asset('assets/images/logo.jpeg',
+                              fit: BoxFit.cover),
+                        ),
                       ),
                     ),
-                    onChanged: (_) {
-                      if (_passwordError != null || _error != null) {
-                        setState(() {
-                          _passwordError = null;
-                          _error = null;
-                        });
-                      }
-                    },
-                  ),
+                    const SizedBox(height: 20),
 
-                  if (_error != null) ...[
+                    const Text('Customer Login',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                            fontSize: 24,
+                            fontWeight: FontWeight.w900,
+                            color: AppColors.navy)),
+                    const SizedBox(height: 6),
+                    const Text(
+                        'Order sign boards, request service\nand track every update.',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                            color: AppColors.textLight,
+                            height: 1.4,
+                            fontSize: 13)),
+                    const SizedBox(height: 28),
+
+                    TextField(
+                      controller: _email,
+                      keyboardType: TextInputType.emailAddress,
+                      textInputAction: TextInputAction.next,
+                      style: const TextStyle(color: AppColors.charcoal),
+                      decoration: InputDecoration(
+                        labelText: 'Email address',
+                        prefixIcon: const Icon(Icons.mail_outline),
+                        errorText: _emailError,
+                      ),
+                      onChanged: (_) {
+                        if (_emailError != null || _error != null) {
+                          setState(() {
+                            _emailError = null;
+                            _error = null;
+                          });
+                        }
+                      },
+                    ),
                     const SizedBox(height: 12),
-                    Container(
-                      padding: const EdgeInsets.all(10),
-                      decoration: BoxDecoration(
-                        color: AppColors.danger.withValues(alpha: .1),
-                        borderRadius: BorderRadius.circular(10),
-                        border: Border.all(color: AppColors.danger.withValues(alpha: .4)),
+                    TextField(
+                      controller: _password,
+                      obscureText: _obscure,
+                      onSubmitted: (_) => _submit(),
+                      style: const TextStyle(color: AppColors.charcoal),
+                      decoration: InputDecoration(
+                        labelText: 'Password',
+                        prefixIcon: const Icon(Icons.lock_outline),
+                        errorText: _passwordError,
+                        suffixIcon: IconButton(
+                          icon: Icon(
+                            _obscure
+                                ? Icons.visibility_outlined
+                                : Icons.visibility_off_outlined,
+                            color: AppColors.gold,
+                          ),
+                          onPressed: () => setState(() => _obscure = !_obscure),
+                        ),
                       ),
-                      child: Text(_error!,
-                          style: const TextStyle(color: AppColors.danger, fontSize: 13)),
+                      onChanged: (_) {
+                        if (_passwordError != null || _error != null) {
+                          setState(() {
+                            _passwordError = null;
+                            _error = null;
+                          });
+                        }
+                      },
                     ),
-                  ],
 
-                  const SizedBox(height: 20),
-                  LoadingButton(loading: _loading, onPressed: _submit, child: const Text('Sign In')),
-                  const SizedBox(height: 10),
+                    if (_error != null) ...[
+                      const SizedBox(height: 12),
+                      Container(
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                          color: AppColors.danger.withValues(alpha: .1),
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(
+                              color: AppColors.danger.withValues(alpha: .4)),
+                        ),
+                        child: Text(_error!,
+                            style: const TextStyle(
+                                color: AppColors.danger, fontSize: 13)),
+                      ),
+                    ],
 
-                  TextButton(
-                    onPressed: () => Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (_) => ForgotPasswordScreen(
-                          customerApi: widget.api,
-                          initialEmail: _email.text.trim(),
-                          portalName: 'Customer',
+                    const SizedBox(height: 20),
+                    LoadingButton(
+                        loading: _loading,
+                        onPressed: _submit,
+                        child: const Text('Sign In')),
+                    const SizedBox(height: 12),
+
+                    // Google Sign-In Button
+                    SizedBox(
+                      height: 48,
+                      child: OutlinedButton.icon(
+                        style: OutlinedButton.styleFrom(
+                          backgroundColor: AppColors.white,
+                          side: const BorderSide(
+                              color: AppColors.gold, width: 1.2),
+                          shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(10)),
+                        ),
+                        onPressed: (_loading || _googleLoading)
+                            ? null
+                            : _handleGoogleSignIn,
+                        icon: _googleLoading
+                            ? const SizedBox(
+                                width: 20,
+                                height: 20,
+                                child: CircularProgressIndicator(
+                                    strokeWidth: 2, color: AppColors.navy))
+                            : const Icon(Icons.g_mobiledata,
+                                size: 30, color: AppColors.navy),
+                        label: Text(
+                          _googleLoading
+                              ? 'Signing in...'
+                              : 'Sign in with Google',
+                          style: const TextStyle(
+                              color: AppColors.navy,
+                              fontWeight: FontWeight.w700,
+                              fontSize: 15),
                         ),
                       ),
                     ),
-                    child: const Text('Forgot password?'),
-                  ),
 
-                  const SizedBox(height: 8),
-                  Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-                    const Text("Don't have an account? ",
-                        style: TextStyle(color: AppColors.textMuted)),
-                    GestureDetector(
-                      onTap: () => setState(() => _showRegister = true),
-                      child: const Text('Register',
-                          style: TextStyle(color: AppColors.gold, fontWeight: FontWeight.w700)),
+                    const SizedBox(height: 10),
+
+                    TextButton(
+                      onPressed: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => ForgotPasswordScreen(
+                            customerApi: widget.api,
+                            initialEmail: _email.text.trim(),
+                            portalName: 'Customer',
+                          ),
+                        ),
+                      ),
+                      child: const Text('Forgot password?'),
                     ),
-                  ]),
-                ],
+
+                    const SizedBox(height: 8),
+                    Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+                      const Text("Don't have an account? ",
+                          style: TextStyle(color: AppColors.textMuted)),
+                      GestureDetector(
+                        onTap: () => setState(() => _showRegister = true),
+                        child: const Text('Register',
+                            style: TextStyle(
+                                color: AppColors.gold,
+                                fontWeight: FontWeight.w700)),
+                      ),
+                    ]),
+                  ],
+                ),
               ),
             ),
           ),
         ),
-      ),
-    ), // Scaffold closes here (child of PopScope)
+      ), // Scaffold closes here (child of PopScope)
     ); // PopScope closes here
   } // build
 } // _LoginScreenState

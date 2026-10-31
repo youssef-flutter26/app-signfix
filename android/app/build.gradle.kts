@@ -4,6 +4,8 @@ import java.io.FileInputStream
 plugins {
     id("com.android.application")
     id("dev.flutter.flutter-gradle-plugin")
+    // إضافة بلج إن فايربيس الأساسي لربط ملف google-services.json تلقائياً
+    id("com.google.gms.google-services")
 }
 
 // ── Load signing key ──────────────────────────────────────────────────────────
@@ -14,7 +16,7 @@ if (keyPropertiesFile.exists()) {
 }
 
 android {
-    namespace = "com.signfixapp.app"
+    namespace = "com.signfix.app"
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
 
@@ -24,27 +26,27 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.signfixapp.app"
+        applicationId = "com.signfix.app"
         minSdk = flutter.minSdkVersion
         targetSdk = flutter.targetSdkVersion
-        versionCode = flutter.versionCode
-        versionName = flutter.versionName
+        versionCode = 10
+        versionName = "9.0.0+10"
         multiDexEnabled = true
     }
 
     signingConfigs {
         create("release") {
-            keyAlias      = keyProperties["keyAlias"]    as String? ?: ""
-            keyPassword   = keyProperties["keyPassword"] as String? ?: ""
-            storeFile     = keyProperties["storeFile"]?.let { file(it) }
-            storePassword = keyProperties["storePassword"] as String? ?: ""
+            keyAlias      = "signfix"
+            keyPassword   = "signfix123"
+            storePassword = "signfix123"
+            storeFile     = file("../signfix-release.jks")
         }
     }
 
     buildTypes {
         release {
-            signingConfig    = signingConfigs.getByName("release")
-            isMinifyEnabled  = false
+            signingConfig     = signingConfigs.getByName("release")
+            isMinifyEnabled   = false
             isShrinkResources = false
         }
         debug {

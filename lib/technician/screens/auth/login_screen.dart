@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../../../services/auth_service.dart';
 import '../../core/app_theme.dart';
 import '../../services/api_client.dart';
 import '../../widgets/common.dart';
@@ -24,6 +25,7 @@ class _LoginScreenState extends State<LoginScreen> {
   final _email = TextEditingController();
   final _password = TextEditingController();
   bool _loading = false;
+  bool _googleLoading = false;
   bool _obscure = true;
   String? _error;
   String? _emailError;
@@ -106,6 +108,32 @@ class _LoginScreenState extends State<LoginScreen> {
       }
     } finally {
       if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _handleGoogleSignIn() async {
+    FocusScope.of(context).unfocus();
+    setState(() {
+      _googleLoading = true;
+      _error = null;
+    });
+    try {
+      await AuthService.signInWithGoogle(role: 'technician');
+      if (mounted) {
+        widget.onAuthenticated();
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _error = e.toString().replaceAll('Exception: ', '');
+        });
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _googleLoading = false;
+        });
+      }
     }
   }
 
@@ -274,6 +302,41 @@ class _LoginScreenState extends State<LoginScreen> {
                           loading: _loading,
                           onPressed: _submit,
                           child: const Text('Start Work')),
+                      const SizedBox(height: 12),
+
+                      // Google Sign-In Button (الإطار لون أصفر AppColors.gold)
+                      SizedBox(
+                        height: 48,
+                        child: OutlinedButton.icon(
+                          style: OutlinedButton.styleFrom(
+                            backgroundColor: AppColors.white,
+                            side: const BorderSide(
+                                color: AppColors.gold, width: 1.2),
+                            shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(10)),
+                          ),
+                          onPressed: (_loading || _googleLoading)
+                              ? null
+                              : _handleGoogleSignIn,
+                          icon: _googleLoading
+                              ? const SizedBox(
+                                  width: 20,
+                                  height: 20,
+                                  child: CircularProgressIndicator(
+                                      strokeWidth: 2, color: AppColors.navy))
+                              : const Icon(Icons.g_mobiledata,
+                                  size: 30, color: AppColors.navy),
+                          label: Text(
+                            _googleLoading
+                                ? 'Signing in...'
+                                : 'Sign in with Google',
+                            style: const TextStyle(
+                                color: AppColors.navy,
+                                fontWeight: FontWeight.w700,
+                                fontSize: 15),
+                          ),
+                        ),
+                      ),
                       const SizedBox(height: 8),
 
                       TextButton(
