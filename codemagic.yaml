@@ -20,7 +20,7 @@ workflows:
         APP_STORE_APPLE_ID: "REPLACE_WITH_APP_STORE_CONNECT_APPLE_ID"
         # Add GOOGLE_SERVICE_INFO_PLIST as a SECRET variable in Codemagic
         # (base64 of ios/Runner/GoogleService-Info.plist). Never commit that file's contents here.
-        SHOREBIRD_TOKEN: "sb_api_Hm00idGPC2gskQ9_SKf-twPsOgvlpsrssI8UdHKt9bY"
+        SHOREBIRD_TOKEN: "sb_api_Hm0OidGPC2gskQ9_SKf-twPsOgvlpSrssI8UdHKt9bY"
     scripts:
       - name: Write GoogleService-Info.plist
         script: |
