@@ -20,6 +20,7 @@ workflows:
         APP_STORE_APPLE_ID: "REPLACE_WITH_APP_STORE_CONNECT_APPLE_ID"
         # Add GOOGLE_SERVICE_INFO_PLIST as a SECRET variable in Codemagic
         # (base64 of ios/Runner/GoogleService-Info.plist). Never commit that file's contents here.
+        SHOREBIRD_TOKEN: "sb_api_Hm00idGPC2gskQ9_SKf-twPsOgvlpsrssI8UdHKt9bY"
     scripts:
       - name: Write GoogleService-Info.plist
         script: |
@@ -37,10 +38,16 @@ workflows:
           LATEST=$(app-store-connect get-latest-testflight-build-number "$APP_STORE_APPLE_ID" || echo 0)
           BUILD_NUMBER=$((LATEST + 1))
           echo "BUILD_NUMBER=$BUILD_NUMBER" >> $CM_ENV
-      - name: Build IPA
+      - name: Initialize Shorebird
         script: |
-          flutter build ipa --release \
-            --build-number=$BUILD_NUMBER \
+          curl --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/shorebirdtech/install/main/install.sh -sSf | bash
+          export PATH="$HOME/.shorebird/bin:$PATH"
+          shorebird --version
+      - name: Build with Shorebird iOS Release
+        script: |
+          export PATH="$HOME/.shorebird/bin:$PATH"
+          shorebird release ios \
+            --token="$SHOREBIRD_TOKEN" \
             --export-options-plist=/Users/builder/export_options.plist
     artifacts:
       - build/ios/ipa/*.ipa
