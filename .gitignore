@@ -19,6 +19,7 @@ npm-debug.log*
 android/key.properties
 android/local.properties
 *.jks
+*.p12
 *.keystore
 *.pem
 *.der
