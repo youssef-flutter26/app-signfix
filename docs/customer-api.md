@@ -1,0 +1,130 @@
+# SignFix Customer Mobile API
+
+Base URL: `/api`. JSON endpoints require `Authorization: Bearer <token>` except registration and password recovery. Upload endpoints use `multipart/form-data`.
+
+## Optional service-area validation
+
+`POST /api/customer/location/validate` remains available for checking whether a location is serviceable, but `X-Service-Area-Token` is temporarily not required by customer, order, or service APIs. JWT authentication is still required. For permission/GPS failures, send `locationError` as `permission_denied`, `gps_unavailable`, `position_unavailable`, or `timeout` to receive a clear error response.
+
+## Authentication
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| POST | `/auth/register` | Register all required customer/company/address fields |
+| POST | `/auth/verify-otp` | Verify registration or reset OTP |
+| POST | `/auth/login` | Login with `{ email, password, portal: "customer" }` |
+| POST | `/auth/forgot-password` | Request reset OTP using email/mobile `identifier` |
+| POST | `/auth/reset-password` | Set password using the `resetToken` returned by OTP verification |
+| GET | `/auth/me` | Current token identity |
+| POST | `/auth/logout` | Revoke the current JWT |
+| POST | `/auth/resend-registration-otp` | Resend an OTP to an unverified customer |
+| POST | `/auth/change-password` | Change password and revoke the current JWT |
+
+OTP purposes are `verify_registration` and `reset_password`. Development responses include `developmentOtp`; production responses never expose it and should be connected to SMS/email delivery.
+New customer accounts remain in `pending_verification` status and cannot log in until registration OTP verification activates the account.
+
+## Customer home and profile
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| GET | `/customer/dashboard` | Active order, service, recent quotation, unread count, and recent activity |
+| GET/PATCH | `/customer/profile` | Personal and company profile |
+| GET | `/customer/orders` | Paginated customer-owned orders; supports `page`, `pageSize`, and `status` |
+| GET | `/customer/services` | Paginated customer-owned service tickets; supports `page`, `pageSize`, and `status` |
+| POST | `/customer/addresses` | Save a delivery/service address |
+| PATCH | `/customer/addresses/:id` | Update an owned saved address |
+| DELETE | `/customer/addresses/:id` | Remove an owned address |
+| DELETE | `/customer/account` | Soft-delete the account after password confirmation |
+
+## Orders and price calculator
+
+1. Fetch the complete mobile ordering configuration with `GET /customer/order-options`. It includes sign-board types, materials, lighting, units, add-ons, upload limits, and price copy.
+2. Upload a design/photo/PDF with `POST /uploads`, field name `file` (8 MB maximum).
+3. Calculate with `POST /calculator`. Send product, length, width, unit (`ft`, `in`, `cm`, `m`), quantity, material, lighting, and boolean add-ons.
+4. Submit the reviewed payload with `POST /orders`.
+5. List with `GET /orders`; fetch owned detail with `GET /customer/orders/:orderId`.
+
+The calculator returns `label: "Estimated Price"` and the mandatory admin-review notice. Order IDs use `SB-ORD-YYYY-NNNNNN`.
+Order submission recalculates pricing on the server and stores the returned cost breakdown; a client-supplied `estimatedPrice` is never trusted.
+
+Once a Delhivery waybill is generated, the customer is emailed the AWB with a public tracking link. Clients do not call anything for this and the order response is unchanged - it simply adds `delhiveryAwb` and `shipmentStatus`. The same values are available any time from `GET /orders/:orderId/tracking`, which the customer may also call directly. See `docs/delhivery-tracking.md`.
+
+Customers can cancel only pre-production orders (`new`, `under_review`, or `quotation`) using `POST /customer/orders/:orderNo/cancel` with `{ "reason": "Ordered by mistake" }`. Later stages require staff handling.
+
+## Design concepts
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| POST | `/customer/designs` | Create concept request with sign type, business text, style, lighting, background, and optional storefront URL |
+| POST | `/customer/designs/:id/generate` | Queue AI concept generation for an owned design request |
+| GET | `/customer/designs/:id` | Poll generation jobs and retrieve generated concepts/image URLs |
+| POST | `/customer/designs/:id/action` | `regenerate`, `request_modification`, `use`, or `send_to_admin` |
+
+These endpoints store concept workflow data. Connect an image-generation provider later to populate `design_concepts.image_url`; every response states that the result is not production artwork.
+
+## Quotations
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| GET | `/customer/quotations?page=1&pageSize=20&status=sent` | Paginated owned quotations |
+| GET | `/customer/quotations/:quotationNo` | Quotation detail |
+| POST | `/customer/quotations/:quotationNo/approve` | Approve a sent/viewed, unexpired quotation |
+| POST | `/customer/quotations/:quotationNo/request-changes` | Request changes with required `comment` |
+| POST | `/customer/quotations/:quotationNo/reject` | Reject with required `reason` |
+| GET | `/customer/quotations/:quotationNo/pdf` | Download PDF |
+
+Draft quotations are never exposed to customers. Sent, viewed, change-requested, approved, rejected, expired, and cancelled quotations remain available as customer-owned read-only records where appropriate. Detail responses include line items, quantity, all price components, `availableActions`, PDF availability, and payment capability metadata. The legacy `POST /customer/quotations/:quotationNo/action` route remains available for the existing customer frontend.
+
+## Payments
+
+| Method | Endpoint | Purpose / body |
+|---|---|---|
+| POST | `/customer/payments/intents` | Create an intent with `{ quotationNo, type: "advance"|"full", idempotencyKey }`; amount is calculated server-side |
+| GET | `/customer/payments` | Owned payment history |
+| GET | `/customer/payments/:id` | Owned payment status/detail |
+| POST | `/customer/payments/:id/capture` | Capture with `{ providerPaymentId, proof }` |
+| POST | `/customer/payments/:id/verify` | Verify with `{ providerPaymentId, status: "captured"|"failed", proof }` |
+| POST | `/customer/payments/:id/refunds` | Refund with `{ amount, reason }` |
+| POST | `/payments/webhook` | Signed, idempotent payment-provider callback |
+
+Payment responses contain `id`, `quotationNo`, `amount`, `currency`, `type`, `status`, `reference`, `provider`, `providerPaymentId`, `refundedAmount`, `capturedAt`, `verifiedAt`, and `createdAt`. Capture/verification proof is HMAC-SHA256 of `reference:providerPaymentId:status` using `PAYMENT_GATEWAY_SECRET`. Webhooks use `X-SignFix-Signature`, calculated over the exact raw JSON body with `PAYMENT_WEBHOOK_SECRET`; supported event types are `payment_authorized`, `payment_captured`, `payment_failed`, and `refund_processed`.
+
+## Service and tracking
+
+Fetch the simple five-step mobile flow and active categories with `GET /customer/service-options`. Upload one or more camera/gallery photos, then submit `POST /services` with `category`, either `remarks` or `description`, an address string or structured address, optional GPS coordinates, and `photos`. List with `GET /customer/services`; track an owned request at `GET /customer/services/:ticketId/tracking`. Service IDs use `SB-SRV-YYYY-NNNNNN` and successful creation returns `Your service request has been submitted.`
+
+Customers can cancel before travel/work begins using `POST /customer/services/:ticketNo/cancel` with `{ "reason": "Issue resolved" }`. After work completes, confirm the technician OTP through `POST /customer/services/:ticketNo/confirm-completion` with `{ "otp": "123456", "accepted": true, "remarks": "Work completed" }`. Submit one review through `POST /customer/services/:ticketNo/review` with `{ "rating": 5, "comment": "Excellent work" }`.
+
+## Customer assets
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| GET | `/customer/assets?page=1&pageSize=20` | Paginated owned assets |
+| GET | `/customer/assets/:assetNo` | Owned asset detail and service history |
+
+Customer priority selection is exposed only when `CUSTOMER_CAN_SELECT_SERVICE_PRIORITY=true`. Otherwise the server forces `normal`, except the `Emergency` category is automatically assigned emergency priority.
+
+The tracking response contains the current status, technician name/contact, job location, customer service photos, technician evidence photos, customer/admin/work notes, and estimated visit. Its normalized `timeline` always contains every mobile stage with `completed`, `current`, or `upcoming` state plus the recorded timestamp and notes when available. Supported business statuses are: `submitted`, `under_review`, `technician_assigned`, `accepted`, `on_the_way`, `reached_location`, `inspection_started`, `work_in_progress`, `completed`, `customer_confirmed`, and `closed`.
+
+## AI support, leads, and notifications
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| GET | `/customer/ai/config` | Assistant name, capabilities, requirement fields, actions, and commercial guardrails |
+| POST | `/customer/ai/chat` | Persistent SignFix AI Assistant message |
+| GET | `/customer/ai/conversations` | Conversation history |
+| POST | `/customer/ai/leads` | Capture requirement/product/budget/contact |
+| GET | `/customer/notifications` | Customer push-notification feed |
+| GET | `/customer/notifications/config` | Firebase readiness and supported customer event keys |
+| POST | `/customer/notifications/devices` | Register an Android, iOS, or web FCM token |
+| DELETE | `/customer/notifications/devices` | Deactivate the current device token |
+| PATCH | `/customer/notifications/:id/read` | Mark owned notification read |
+| PATCH | `/customer/notifications/read-all` | Mark all owned notifications read |
+
+Push events include order submission/approval/production/readiness, quotation generation/update, technician assignment/on-the-way/arrival, work start/completion, and final service completion. Feed records include an `eventKey` and entity navigation data such as `orderNo`, `quotationNo`, or `ticketNo`.
+
+Chat requests may include a structured `requirements` object containing business type, sign type, length, width, unit, location, material, lighting, optional budget, and installation requirement. Responses return collected and missing fields, the next question, estimate readiness, structured mobile actions, and escalation state. Conversations and lead requirements are persisted as metadata. The deterministic fallback and OpenAI-backed assistant both retain the commercial disclaimer and escalation rules.
+
+## Deployment checklist
+
+Tables and seed data are applied automatically on server start by `server/migrate.js` (`database/schema.mysql.sql`, `database/seed.mysql.sql`). Configure `DATABASE_URL`, a strong `JWT_SECRET`, CORS origins, SMS/email OTP delivery, durable object storage (local `/uploads` is development-only), push notification delivery, maps/geocoding, an optional LLM provider, and a payment gateway before production.

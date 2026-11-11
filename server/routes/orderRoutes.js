@@ -1,0 +1,118 @@
+const router = require("express").Router();
+const { z } = require("zod");
+const controller = require("../controllers/orderController");
+const validate = require("../middleware/validate");
+const { authenticate, authorize } = require("../middleware/auth");
+router.use(authenticate);
+router.get("/", controller.list);
+router.get(
+  "/whatsapp-notifications/logs",
+  authorize("super_admin", "admin", "sales_manager"),
+  controller.whatsappLogs,
+);
+router.get(
+  "/email-notifications/logs",
+  authorize("super_admin", "admin", "sales_manager"),
+  controller.emailLogs,
+);
+const waybill = z
+  .string()
+  .trim()
+  .regex(/^[A-Za-z0-9]{6,40}$/, "Enter a valid Delhivery waybill (AWB) number");
+router.get(
+  "/:id/tracking",
+  authorize("super_admin", "admin", "sales_manager", "customer"),
+  controller.tracking,
+);
+router.post(
+  "/:id/shipments",
+  authorize("super_admin", "admin", "sales_manager"),
+  validate(z.object({ waybill })),
+  controller.addShipment,
+);
+router.delete(
+  "/:id/shipments/:waybill",
+  authorize("super_admin", "admin", "sales_manager"),
+  controller.removeShipment,
+);
+router.get(
+  "/:id",
+  authorize("super_admin", "admin", "sales_manager", "customer"),
+  controller.detail,
+);
+router.post(
+  "/",
+  authorize("customer", "super_admin", "admin"),
+  validate(
+    z
+      .object({
+        customerId: z.coerce.number().int().positive().optional(),
+        product: z.string().min(1),
+        length: z.coerce.number().positive(),
+        width: z.coerce.number().positive(),
+        quantity: z.coerce.number().int().positive(),
+        material: z.string().optional(),
+        lighting: z.string().optional(),
+        unit: z.enum(["ft", "in", "cm", "m"]).default("ft"),
+        estimatedPrice: z.coerce.number().nonnegative().optional(),
+        address: z.union([z.string(), z.record(z.any())]).optional(),
+        designFiles: z.array(z.string()).max(10).optional(),
+        designConceptId: z.coerce.number().int().positive().optional(),
+        promotionBannerId: z.string().trim().min(1).max(120).optional(),
+        idempotencyKey: z.string().trim().min(16).max(120).optional(),
+        useWallet: z.boolean().optional(),
+        installation: z.union([z.boolean(), z.string()]).optional(),
+        transportation: z.boolean().optional(),
+        design: z.boolean().optional(),
+        electricalWork: z.boolean().optional(),
+        mountingStructure: z.boolean().optional(),
+        accessories: z.union([z.boolean(), z.string()]).optional(),
+        customization: z.boolean().optional(),
+        customerDetails: z.record(z.any()).optional(),
+      })
+      .passthrough(),
+  ),
+  controller.create,
+);
+const orderStatus = z.enum([
+  "new",
+  "under_review",
+  "quotation",
+  "approved",
+  "production",
+  "ready",
+  "installation",
+  "completed",
+  "cancelled",
+]);
+router.patch(
+  "/:id/status",
+  authorize("super_admin", "admin", "sales_manager"),
+  validate(z.object({ status: orderStatus })),
+  controller.updateStatus,
+);
+router.patch(
+  "/:id/designs/:designId",
+  authorize("super_admin", "admin", "sales_manager"),
+  validate(
+    z.object({
+      action: z.enum(["approve", "reject", "request_modification"]),
+      notes: z.string().max(2000).optional(),
+    }),
+  ),
+  controller.reviewDesign,
+);
+router.patch(
+  "/:id",
+  authorize("super_admin", "admin", "sales_manager"),
+  validate(
+    z.object({
+      specifications: z.record(z.any()).optional(),
+      adminNotes: z.string().max(4000).optional(),
+      technicianId: z.coerce.number().int().positive().nullable().optional(),
+      status: orderStatus.optional(),
+    }),
+  ),
+  controller.update,
+);
+module.exports = router;

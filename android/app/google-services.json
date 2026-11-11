@@ -1,0 +1,62 @@
+{
+  "project_info": {
+    "project_number": "531570390505",
+    "project_id": "signfix-feb4b",
+    "storage_bucket": "signfix-feb4b.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:531570390505:android:c5c3da2e96c30e9806c778",
+        "android_client_info": {
+          "package_name": "com.signfix.app"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "531570390505-5eibeo7nqc0a2j050ed30rgcv2atqk52.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.signfix.app",
+            "certificate_hash": "766f8078065ada31b7654ac12f13078e24c9faca"
+          }
+        },
+        {
+          "client_id": "531570390505-a1epf9nqp9ph0komuatb33d9h4gt37mb.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.signfix.app",
+            "certificate_hash": "20cf7910bfd5cd62cf82462d809089f44f8b8281"
+          }
+        },
+        {
+          "client_id": "531570390505-n86thi83hq0p9eirs5bf8ajo4j24ovkp.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCFTw8wFPUmgzv_3K7TulgvlJQJ3CY22Aw"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "531570390505-n86thi83hq0p9eirs5bf8ajo4j24ovkp.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "531570390505-i2l3513s7at1noct1d5oe9fes7j8cq3k.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.signfix.app"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

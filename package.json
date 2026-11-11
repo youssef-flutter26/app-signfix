@@ -1,0 +1,54 @@
+{
+  "name": "signfix",
+  "private": true,
+  "version": "1.0.0",
+  "main": "app.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "node server/dev.js",
+    "dev:frontend": "vite --config vite.config.mjs",
+    "build": "vite build",
+    "postinstall": "node -e \"require(require('node:path').resolve(process.env.INIT_CWD || process.cwd(), 'scripts/postinstall.cjs'))\"",
+    "test": "vitest run",
+    "start": "node server/index.js",
+    "server": "node server/index.js",
+    "db:seed": "node server/seed.js"
+  },
+  "dependencies": {
+    "@tailwindcss/vite": "^4.3.3",
+    "@vitejs/plugin-react": "latest",
+    "bcryptjs": "latest",
+    "bullmq": "^6.1.2",
+    "cloudinary": "^2.10.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.6.1",
+    "exceljs": "^4.4.0",
+    "express": "^4.21.2",
+    "firebase": "^12.17.1",
+    "firebase-admin": "^14.2.0",
+    "framer-motion": "^13.2.0",
+    "helmet": "^7.2.0",
+    "ioredis": "^6.0.0",
+    "jsonwebtoken": "latest",
+    "lucide-react": "latest",
+    "multer": "latest",
+    "mysql2": "^3.24.4",
+    "nodemailer": "^10.0.11",
+    "openai": "^7.5.0",
+    "pdfkit": "^0.19.1",
+    "qrcode": "^1.5.4",
+    "react": "latest",
+    "react-dom": "latest",
+    "socket.io": "^4.8.3",
+    "socket.io-client": "^4.8.3",
+    "tailwindcss": "^4.3.3",
+    "vite": "latest",
+    "zod": "latest"
+  },
+  "devDependencies": {
+    "prettier": "^3.9.6",
+    "vitest": "latest"
+  }
+}

@@ -1,0 +1,303 @@
+const bcrypt = require('bcryptjs');
+const isMysql = () => /^mysql:\/\//i.test(process.env.DATABASE_URL || '');
+let pool;
+const notifyCustomer=(...args)=>require('./services/notificationService').sendEvent(...args);
+const notifyCustomerWhatsApp=(...args)=>require('./services/orderWhatsappService').queueOrderEvent(...args);
+function isConfigured() { return Boolean(process.env.DATABASE_URL); }
+function getPool() {
+  if (!isConfigured()) throw Object.assign(new Error('DATABASE_URL is required'), { status: 503 });
+  if (!isMysql()) throw Object.assign(new Error(`DATABASE_URL must be a MySQL connection string (mysql://user:password@host:3306/database); the running process has one starting with "${String(process.env.DATABASE_URL).split(':')[0]}:"`), { status: 503 });
+  if (pool) return pool;
+  pool = require('./mysqlPool').createPool({ uri: process.env.DATABASE_URL, connectionLimit: Number(process.env.DB_POOL_SIZE || 10), connectTimeout: Number(process.env.DB_CONNECT_TIMEOUT_MS || 5000) });
+  return pool;
+}
+async function health() { await getPool().query('SELECT 1'); return { mode: 'mysql', connected: true }; }
+
+// Tables come from database/schema.mysql.sql (applied by server/migrate.js);
+// registration only needs the customer role, which the seed also inserts.
+let authSchemaPromise = null;
+async function ensureAuthSchema() {
+  if (authSchemaPromise) return authSchemaPromise;
+  authSchemaPromise = getPool().query("INSERT IGNORE INTO roles(name) VALUES('customer')").then(() => true).catch((error) => {
+    authSchemaPromise = null;
+    throw error;
+  });
+  return authSchemaPromise;
+}
+async function findUserByEmail(email) { const { rows } = await getPool().query(`SELECT u.id,u.name,u.email,u.status,u.verified_at AS "verifiedAt",u.password_hash AS "passwordHash",r.name AS role FROM users u JOIN roles r ON r.id=u.role_id WHERE u.email=$1 LIMIT 1`, [email]); return rows[0]; }
+
+const catalog = {
+  products: { table: 'products', select: 'id,name,category,description,image_url AS "imageUrl",pricing_method AS "pricingMethod",base_price AS price,status,is_discounted AS "isDiscounted"', search: ['name','category','description'], sort: ['id','name','category','base_price','status','is_discounted'] },
+  categories: { table: 'product_categories', select: 'id,name,status', search: ['name'], sort: ['id','name','status'] },
+  materials: { table: 'materials', select: 'id,name,description,image_url AS "imageUrl",pricing_method AS "pricingMethod",price_per_sqft AS price,status', search: ['name','description'], sort: ['id','name','price_per_sqft','status'] },
+  lighting: { table: 'lighting_options', select: 'id,name,description,image_url AS "imageUrl",pricing_method AS "pricingMethod",price_per_sqft AS price,status', search: ['name','description'], sort: ['id','name','price_per_sqft','status'] },
+  accessories: { table: 'accessories', select: 'id,name,description,image_url AS "imageUrl",pricing_method AS "pricingMethod",price,status', search: ['name','description'], sort: ['id','name','price','status'] },
+  'installation-options': { table: 'installation_options', select: 'id,name,description,image_url AS "imageUrl",pricing_method AS "pricingMethod",price,status', search: ['name','description'], sort: ['id','name','price','status'] },
+  'pricing-rules': { table: 'pricing_rules', select: 'id,product_id AS "productId",name,rule_type AS "ruleType",pricing_method AS "pricingMethod",amount,tax_rate AS "taxRate",active AS status', search: ['name','rule_type'], sort: ['id','name','rule_type','amount','active'] },
+  'service-categories': { table: 'service_categories', select: 'id,name,status', search: ['name'], sort: ['id','name','status'] },
+  customers: { table: 'customer_directory', select: 'id,name,email,mobile,company_name AS company,address,status,created_at AS "createdAt"', search: ['name','email','mobile','company_name'], sort: ['id','name','email','status','created_at'] },
+  technicians: { table: 'technician_directory', select: 'id,name,email,mobile,service_areas AS "serviceAreas",status,created_at AS "createdAt"', search: ['name','email','mobile'], sort: ['id','name','status','created_at'] },
+  quotations: { table: 'quotation_directory', select: '*', search: ['`quotationNo`','`orderNo`','status'], sort: ['id','`quotationNo`','`orderNo`','`finalAmount`','`validUntil`','status'] },
+  assets: { table: 'asset_directory', select: '*', search: ['`assetNo`','customer'], sort: ['id','`assetNo`','customer','`createdAt`'] },
+  notifications: { table: 'notification_directory', select: '*', search: ['email','title','body','channel'], sort: ['id','email','channel','`createdAt`'] },
+  'notification-templates': { table: 'notification_templates', select: 'id,name,event_key AS "eventKey",title,body,channels,status,updated_at AS "updatedAt"', search: ['name','event_key','title','body'], sort: ['id','name','event_key','status','updated_at'] },
+  'ai-leads': { table: 'ai_leads', select: 'id,customer_id AS "customerId",requirement,product,estimated_budget AS "estimatedBudget",contact,metadata,status,created_at AS "createdAt"', search: ['requirement','product','contact','status'], sort: ['id','product','estimated_budget','status','created_at'] },
+  'ai-knowledge': { table: 'ai_knowledge_base', select: 'id,title,category,content,status,created_at AS "createdAt"', search: ['title','category','content'], sort: ['id','title','category','status','created_at'] },
+  'ai-conversations': { table: 'ai_conversations', select: 'id,user_id AS "userId",question,response,escalation_status AS "escalationStatus",created_at AS "createdAt"', search: ['question','response','escalation_status'], sort: ['id','escalation_status','created_at'] },
+  'design-concepts': { table: 'design_concepts', select: 'id,request_id AS "requestId",image_url AS "imageUrl",prompt,status,admin_notes AS "adminNotes",created_at AS "createdAt"', search: ['prompt','status','admin_notes'], sort: ['id','status','created_at'] },
+  settings: { table: 'settings', select: 'id,setting_key AS `key`,value,updated_at AS "updatedAt"', search: ['setting_key'], sort: ['id','setting_key','updated_at'] },
+  'audit-logs': { table: 'audit_logs', select: 'id,user_id AS "userId",action,entity_type AS "entityType",entity_id AS "entityId",metadata,created_at AS "createdAt"', search: ['action','entity_type'], sort: ['id','action','entity_type','created_at'] },
+  reviews: { table: 'reviews', select: 'id,customer_id AS "customerId",job_id AS "jobId",rating,comment,created_at AS "createdAt"', search: ['comment'], sort: ['id','rating','created_at'] },
+  roles: { table: 'roles', select: 'id,name', search: ['name'], sort: ['id','name'] },
+  permissions: { table: 'permissions', select: 'id,name,description', search: ['name','description'], sort: ['id','name'] },
+};
+function resource(name) { const value = catalog[name]; if (!value) throw Object.assign(new Error('Unsupported resource'), { status: 404 }); return value; }
+async function listCatalog(name, query = {}) { const item = resource(name); const page = Math.max(1, Number(query.page) || 1), pageSize = Math.min(100, Math.max(5, Number(query.pageSize) || 20)); const params = [], clauses = []; const search = String(query.search || '').trim(), status = String(query.status || '').trim(); if (search && item.search?.length) { params.push(`%${search}%`); clauses.push(`(${item.search.map(column => `LOWER(COALESCE(CAST(${column} AS CHAR),'')) LIKE LOWER($1)`).join(' OR ')})`); } if (status && item.sort?.includes('status')) { params.push({ true: '1', false: '0' }[status] ?? status); clauses.push(`CAST(status AS CHAR)=$${params.length}`); } const where = clauses.length ? ` WHERE ${clauses.join(' AND ')}` : ''; const requestedSort = String(query.sort || 'id'), sort = item.sort?.includes(requestedSort) ? requestedSort : 'id'; const direction = String(query.direction).toLowerCase() === 'asc' ? 'ASC' : 'DESC'; const dataParams = [...params, pageSize, (page - 1) * pageSize]; const [count, result] = await Promise.all([getPool().query(`SELECT COUNT(*) total FROM ${item.table}${where}`, params), getPool().query(`SELECT ${item.select} FROM ${item.table}${where} ORDER BY ${sort} ${direction} LIMIT $${dataParams.length - 1} OFFSET $${dataParams.length}`, dataParams)]); const total=count.rows[0].total; return { data: result.rows, page, pageSize, total, totalPages: Math.max(1, Math.ceil(total / pageSize)) }; }
+const writableCatalog = {
+  products: { table: 'products', fields: { name: 'name', category: 'category', description: 'description', imageUrl:'image_url', pricingMethod: 'pricing_method', price:'base_price', status: 'status', isDiscounted: 'is_discounted' } },
+  categories: { table: 'product_categories', fields: { name: 'name', status: 'status' } },
+  materials: { table: 'materials', fields: { name:'name',description:'description',imageUrl:'image_url',pricingMethod:'pricing_method',price:'price_per_sqft',status:'status' } },
+  lighting: { table: 'lighting_options', fields: { name:'name',description:'description',imageUrl:'image_url',pricingMethod:'pricing_method',price:'price_per_sqft',status:'status' } },
+  accessories: { table: 'accessories', fields: { name:'name',description:'description',imageUrl:'image_url',pricingMethod:'pricing_method',price:'price',status:'status' } },
+  'installation-options': { table: 'installation_options', fields: { name:'name',description:'description',imageUrl:'image_url',pricingMethod:'pricing_method',price:'price',status:'status' } },
+  'pricing-rules': { table: 'pricing_rules', fields: { productId:'product_id',name:'name',ruleType:'rule_type',pricingMethod:'pricing_method',amount:'amount',taxRate:'tax_rate',status:'active' } },
+  'service-categories': { table: 'service_categories', fields: { name: 'name', status: 'status' } },
+  'ai-leads': { table: 'ai_leads', fields: { requirement: 'requirement', product: 'product', estimatedBudget: 'estimated_budget', contact: 'contact', status: 'status' } },
+  'ai-knowledge': { table: 'ai_knowledge_base', fields: { title: 'title', category: 'category', content: 'content', status: 'status' } },
+  'design-concepts': { table: 'design_concepts', fields: { status: 'status', adminNotes: 'admin_notes' } },
+  'notification-templates': { table:'notification_templates', fields:{name:'name',eventKey:'event_key',title:'title',body:'body',channels:'channels',status:'status'} },
+  settings: { table: 'settings', fields: { key: 'setting_key', value: 'value' } },
+};
+function writable(name) { const item = writableCatalog[name]; if (!item) throw Object.assign(new Error('This resource is read-only or unsupported'), { status: 422 }); return item; }
+async function createCatalog(name, data, user) { const item = writable(name), entries = Object.entries(data).filter(([key, value]) => item.fields[key] && value !== undefined); if (!entries.length) throw Object.assign(new Error('No supported fields supplied'), { status: 422 }); const columns = entries.map(([key]) => item.fields[key]), values = entries.map(([, value]) => value), placeholders = values.map((_, index) => `$${index + 1}`); const { insertId } = await getPool().query(`INSERT INTO ${item.table}(${columns.join(',')}) VALUES(${placeholders.join(',')})`, values); const { rows } = await getPool().query(`SELECT * FROM ${item.table} WHERE id=$1`, [insertId]); await audit(user.id, `${name}.create`, name, rows[0].id, data); return rows[0]; }
+async function updateCatalog(name, id, data, user) { const item = writable(name), entries = Object.entries(data).filter(([key, value]) => item.fields[key] && value !== undefined); if (!entries.length) throw Object.assign(new Error('No supported fields supplied'), { status: 422 }); const values = entries.map(([, value]) => value), sets = entries.map(([key], index) => `${item.fields[key]}=$${index + 1}`); values.push(id); await getPool().query(`UPDATE ${item.table} SET ${sets.join(',')} WHERE id=$${values.length}`, values); const { rows } = await getPool().query(`SELECT * FROM ${item.table} WHERE id=$1`, [id]); if (!rows[0]) throw Object.assign(new Error('Resource not found'), { status: 404 }); await audit(user.id, `${name}.update`, name, id, data); return rows[0]; }
+async function deleteCatalog(name, id, user) { const item = writable(name); const hasStatus = Object.values(item.fields).includes('status'); const result = hasStatus ? await getPool().query(`UPDATE ${item.table} SET status=FALSE WHERE id=$1`, [id]) : await getPool().query(`DELETE FROM ${item.table} WHERE id=$1`, [id]); if (!result.rowCount) throw Object.assign(new Error('Resource not found'), { status: 404 }); await audit(user.id, `${name}.${hasStatus ? 'disable' : 'delete'}`, name, id, {}); }
+
+async function listOrders(user,query={}) { const params=[],clauses=[];if(user.role==='customer'){params.push(user.email);clauses.push(`u.email=$${params.length}`);}if(query.status){params.push(query.status);clauses.push(`o.status=$${params.length}`);}if(query.search){params.push(`%${query.search}%`);clauses.push(`(o.order_no LIKE $${params.length} OR u.name LIKE $${params.length} OR COALESCE(JSON_UNQUOTE(JSON_EXTRACT(o.specifications,'$.product')),'') LIKE $${params.length})`);}const where=clauses.length?`WHERE ${clauses.join(' AND ')}`:'',limit=Math.min(100,Math.max(1,Number(query.limit)||100));params.push(limit);const {rows}=await getPool().query(`SELECT o.order_no AS id,u.name AS customer,o.specifications,o.estimated_price AS "estimatedPrice",o.status,o.created_at AS "createdAt",u.email AS "createdBy" FROM orders o JOIN customers c ON c.id=o.customer_id JOIN users u ON u.id=c.user_id ${where} ORDER BY o.created_at DESC LIMIT $${params.length}`,params);return rows.map(row=>({...row,...(row.specifications||{})}));}
+async function getCustomerWallet(userId) {
+  const customer = (await getPool().query(`SELECT c.id FROM customers c JOIN users u ON u.id=c.user_id WHERE u.id=$1`, [userId])).rows[0];
+  if (!customer) throw Object.assign(new Error('Customer profile not found'), { status: 404 });
+  await getPool().query(`INSERT IGNORE INTO customer_wallets(customer_id, balance, total_cashback_earned) VALUES($1, 0, 0)`, [customer.id]);
+  const wallet = (await getPool().query(`SELECT id, balance, total_cashback_earned AS "totalCashbackEarned", updated_at AS "updatedAt" FROM customer_wallets WHERE customer_id=$1`, [customer.id])).rows[0];
+  const transactions = (await getPool().query(`SELECT id, order_id AS "orderId", quotation_id AS "quotationId", transaction_type AS "type", amount, balance_after AS "balanceAfter", description, created_at AS "createdAt" FROM wallet_transactions WHERE customer_id=$1 ORDER BY id DESC LIMIT 50`, [customer.id])).rows;
+  return {
+    customerId: customer.id,
+    balance: Number(wallet.balance),
+    totalCashbackEarned: Number(wallet.totalCashbackEarned),
+    updatedAt: wallet.updatedAt,
+    transactions: transactions.map(t => ({ ...t, amount: Number(t.amount), balanceAfter: Number(t.balanceAfter) })),
+  };
+}
+
+async function getDiscountedProducts() {
+  const { rows } = await getPool().query(
+    `SELECT id, name, category, description, image_url AS "imageUrl", pricing_method AS "pricingMethod", base_price AS price, status, is_discounted AS "isDiscounted" FROM products WHERE status=TRUE AND is_discounted=TRUE ORDER BY id`
+  );
+  return rows.map(r => ({ ...r, cashbackAmount: 200 }));
+}
+
+async function getDiscountedSliderImages() {
+  const { rows } = await getPool().query(
+    `SELECT id, name, category, description, image_url AS "imageUrl", base_price AS price, is_discounted AS "isDiscounted" FROM products WHERE status=TRUE AND is_discounted=TRUE ORDER BY id`
+  );
+  return rows.map(r => ({
+    id: String(r.id),
+    name: r.name,
+    category: r.category,
+    description: r.description,
+    imageUrl: r.imageUrl || null,
+    price: Number(r.price || 0),
+    cashbackAmount: 200,
+    isDiscounted: true,
+    cashbackBadge: '₹200 Cashback'
+  }));
+}
+
+async function createOrder(user, data, orderNo) {
+  const admin = ['super_admin','admin'].includes(user.role);
+  if (admin && !data.customerId) throw Object.assign(new Error('customerId is required when an admin creates an order'), { status: 422 });
+  const params = admin ? [data.customerId] : [user.id];
+  const lookup = admin ? 'SELECT c.id,c.user_id,u.name,u.mobile FROM customers c JOIN users u ON u.id=c.user_id WHERE c.id=$1' : 'SELECT c.id,c.user_id,u.name,u.mobile FROM customers c JOIN users u ON u.id=c.user_id WHERE c.user_id=$1';
+  const customer = (await getPool().query(lookup, params)).rows[0];
+  if (!customer) throw Object.assign(new Error('Customer profile not found'), { status: 422 });
+
+  const price = await calculatePrice(data);
+  if (
+    data.estimatedPrice !== undefined &&
+    Number(data.estimatedPrice) !== price.estimatedPrice
+  ) {
+    throw Object.assign(
+      new Error(
+        'Pricing changed since this estimate. Please recalculate your quote before submitting the order.',
+      ),
+      { status: 409 },
+    );
+  }
+
+  // Check if ordered product is marked as discounted
+  const productName = data.product;
+  const productRow = (await getPool().query(`SELECT id, name, is_discounted FROM products WHERE (name=$1 OR CAST(id AS CHAR)=$1) AND status=TRUE LIMIT 1`, [productName])).rows[0];
+  const isEligibleDiscounted = Boolean(productRow && productRow.is_discounted);
+  const cashbackEarned = isEligibleDiscounted ? 200 : 0;
+
+  let walletDiscountApplied = 0;
+  if ((data.useWallet || data.applyWallet) && customer.id) {
+    await getPool().query(`INSERT IGNORE INTO customer_wallets(customer_id, balance, total_cashback_earned) VALUES($1, 0, 0)`, [customer.id]);
+    const wallet = (await getPool().query(`SELECT id, balance FROM customer_wallets WHERE customer_id=$1 FOR UPDATE`, [customer.id])).rows[0];
+    if (wallet && Number(wallet.balance) > 0) {
+      walletDiscountApplied = Math.min(Number(wallet.balance), price.estimatedPrice);
+      if (walletDiscountApplied > 0) {
+        const newBalance = Number(wallet.balance) - walletDiscountApplied;
+        await getPool().query(`UPDATE customer_wallets SET balance=$2, updated_at=NOW() WHERE id=$1`, [wallet.id, newBalance]);
+        await getPool().query(
+          `INSERT INTO wallet_transactions(wallet_id, customer_id, transaction_type, amount, balance_after, description) VALUES($1, $2, 'wallet_debit', $3, $4, $5)`,
+          [wallet.id, customer.id, walletDiscountApplied, newBalance, `Wallet balance applied to Order ${orderNo}`]
+        );
+      }
+    }
+  }
+
+  const finalEstimatedPrice = Math.max(0, price.estimatedPrice - walletDiscountApplied);
+
+  const specifications = {
+    ...data,
+    customerId: undefined,
+    estimatedPrice: undefined,
+    priceBreakdown: price,
+    area: price.area,
+    areaUnit: price.areaUnit,
+    priceLabel: price.label,
+    priceNotice: price.notice,
+    isDiscountedProduct: isEligibleDiscounted,
+    cashbackEarned,
+    walletDiscountApplied,
+    finalEstimatedPrice
+  };
+
+  const insertResult = await getPool().query(
+    `INSERT INTO orders(order_no,customer_id,specifications,estimated_price,status) VALUES($1,$2,$3,$4,'under_review')`,
+    [orderNo, customer.id, JSON.stringify(specifications), finalEstimatedPrice]
+  );
+  const orderId = insertResult.insertId;
+  const createdAt = (await getPool().query('SELECT created_at FROM orders WHERE id=$1', [orderId])).rows[0].created_at;
+
+  await getPool().query('INSERT INTO order_status_history(order_id,status,created_by) VALUES($1,$2,$3)', [orderId, 'under_review', user.id]);
+  notifyCustomerWhatsApp(orderId, 'order_placed', customer.user_id, customer.mobile, `Hello ${customer.name}, thank you for your order! Your SignFix order ${orderNo} for ${productName} has been placed and is under review. We'll send you WhatsApp updates as it progresses.`).catch((error) => {
+    console.error('[order] WhatsApp order-placed notification failed:', error.message);
+  });
+
+  if (cashbackEarned > 0) {
+    await getPool().query(`INSERT IGNORE INTO customer_wallets(customer_id, balance, total_cashback_earned) VALUES($1, 0, 0)`, [customer.id]);
+    const wallet = (await getPool().query(`SELECT id, balance, total_cashback_earned FROM customer_wallets WHERE customer_id=$1 FOR UPDATE`, [customer.id])).rows[0];
+    if (wallet) {
+      const newBalance = Number(wallet.balance) + cashbackEarned;
+      const newTotalCashback = Number(wallet.total_cashback_earned) + cashbackEarned;
+      await getPool().query(`UPDATE customer_wallets SET balance=$2, total_cashback_earned=$3, updated_at=NOW() WHERE id=$1`, [wallet.id, newBalance, newTotalCashback]);
+      await getPool().query(
+        `INSERT INTO wallet_transactions(wallet_id, customer_id, order_id, transaction_type, amount, balance_after, description) VALUES($1, $2, $3, 'cashback_credit', $4, $5, $6)`,
+        [wallet.id, customer.id, orderId, cashbackEarned, newBalance, `Cashback ₹${cashbackEarned} credited for ordering discounted product (${productName}) - Order ${orderNo}`]
+      );
+      await notifyCustomer(customer.user_id, 'wallet.cashback', 'Cashback Credited!', `You earned ₹${cashbackEarned} cashback in your SignFix Wallet for ordering ${productName}!`, { orderNo, cashbackEarned });
+    }
+  } else {
+    await notifyCustomer(customer.user_id, 'order.submitted', 'Order submitted', `Order ${orderNo} has been submitted.`, { orderNo });
+  }
+
+  await audit(user.id, 'order.create', 'order', orderId, { orderNo, customerId: customer.id, estimatedPrice: finalEstimatedPrice, cashbackEarned, walletDiscountApplied });
+
+  return { ...specifications, id: orderNo, estimatedPrice: finalEstimatedPrice, status: 'under_review', createdAt };
+}
+async function updateOrderStatus(orderNo, status, user) {
+  const before = (await getPool().query('SELECT o.id AS "orderId",o.order_no AS id,c.user_id,u.name,u.mobile FROM orders o JOIN customers c ON o.customer_id=c.id JOIN users u ON u.id=c.user_id WHERE o.order_no=$1', [orderNo])).rows[0];
+  if (!before) throw Object.assign(new Error('Order not found'), { status: 404 });
+  await getPool().query('UPDATE orders SET status=$2,updated_at=NOW() WHERE id=$1', [before.orderId, status]);
+  const rows = [{ ...before, status }];
+  const events={new:['order.updated','Order received'],under_review:['order.updated','Order under review'],quotation:['quotation.generated','Quotation in progress'],approved:['order.approved','Order approved'],production:['order.production_started','Production started'],ready:['order.ready','Order ready'],installation:['order.updated','Installation started'],completed:['order.updated','Order completed'],cancelled:['order.updated','Order cancelled']};
+  await getPool().query('INSERT INTO order_status_history(order_id,status,created_by) VALUES($1,$2,$3)', [rows[0].orderId, status, user.id]);
+  if(events[status]){
+    await notifyCustomer(rows[0].user_id,events[status][0],events[status][1],`Order ${orderNo}: ${status.replaceAll('_',' ')}`,{orderNo,status});
+    notifyCustomerWhatsApp(rows[0].orderId, `order_status_${status}`, rows[0].user_id, rows[0].mobile, `Hello ${rows[0].name}, your SignFix order ${orderNo} update: ${events[status][1]}.`).catch((error) => {
+      console.error('[order] WhatsApp status notification failed:', error.message);
+    });
+  }
+  delete rows[0].user_id; delete rows[0].name; delete rows[0].mobile; delete rows[0].orderId;
+  await audit(user.id, 'order.status', 'order', null, { orderNo, status });
+  return rows[0];
+}
+async function getOrder(orderNo,user){const params=[orderNo],customerClause=user.role==='customer'?(params.push(user.email),`AND u.email=$2`):'';const order=(await getPool().query(`SELECT o.id AS "databaseId",o.order_no AS id,u.name AS customer,u.email,o.specifications,o.estimated_price AS "estimatedPrice",o.status,o.admin_notes AS "adminNotes",o.installation_technician_id AS "technicianId",o.created_at AS "createdAt",tu.name AS "technicianName" FROM orders o JOIN customers c ON c.id=o.customer_id JOIN users u ON u.id=c.user_id LEFT JOIN technicians t ON t.id=o.installation_technician_id LEFT JOIN users tu ON tu.id=t.user_id WHERE o.order_no=$1 ${customerClause}`,params)).rows[0];if(!order)throw Object.assign(new Error('Order not found'),{status:404});const [quotations,designs,technicians]=await Promise.all([getPool().query('SELECT q.quotation_no AS "quotationNo",q.status,q.final_amount AS "finalAmount",q.valid_until AS "validUntil" FROM quotations q WHERE q.order_id=$1 ORDER BY q.id DESC',[order.databaseId]),getPool().query(`SELECT d.id,d.requirements,d.status,d.created_at AS "createdAt" FROM design_requests d WHERE d.order_id=$1 ORDER BY d.id DESC`,[order.databaseId]),getPool().query("SELECT t.id,u.name,u.mobile FROM technicians t JOIN users u ON u.id=t.user_id WHERE u.status='active' ORDER BY u.name")]);return {...order,...order.specifications,quotations:quotations.rows,designs:designs.rows,technicians:technicians.rows};}
+async function updateOrder(orderNo,data,user){
+  const current=await getOrder(orderNo,user),specs=data.specifications?{...current.specifications,...data.specifications}:current.specifications;
+  const hasTechnician=Object.prototype.hasOwnProperty.call(data,'technicianId');
+  const assignmentChanged=hasTechnician&&Number(current.technicianId||0)!==Number(data.technicianId||0);
+  const client=await getPool().connect();
+  try{
+    await client.query('BEGIN');
+    if(data.technicianId){
+      const exists=(await client.query("SELECT 1 FROM technicians t JOIN users u ON u.id=t.user_id WHERE t.id=$1 AND u.status='active'",[data.technicianId])).rowCount;
+      if(!exists)throw Object.assign(new Error('Active installation technician not found'),{status:422});
+    }
+    await client.query('UPDATE orders SET specifications=COALESCE($2,specifications),admin_notes=COALESCE($3,admin_notes),installation_technician_id=CASE WHEN $4 THEN $5 ELSE installation_technician_id END,status=COALESCE($6,status),updated_at=NOW() WHERE order_no=$1',[orderNo,data.specifications?JSON.stringify(specs):null,data.adminNotes,hasTechnician,data.technicianId??null,data.status]);
+    const {rows}=await client.query('SELECT o.id,o.order_no,c.user_id,o.customer_id,o.admin_notes FROM orders o JOIN customers c ON o.customer_id=c.id WHERE o.order_no=$1',[orderNo]);
+    if(!rows[0])throw Object.assign(new Error('Order not found'),{status:404});
+    if(hasTechnician){
+      const location=typeof specs.address==='object'&&specs.address!==null?specs.address:{address:specs.address||null};
+      await client.query(`INSERT INTO service_tickets(order_id,ticket_no,customer_id,category,service_type,description,location,photos,priority,status,admin_instructions)
+        VALUES($1,$2,$3,'Installation','Installation',$4,$5,'[]','normal',$6,$7)
+        ON DUPLICATE KEY UPDATE description=VALUES(description),location=VALUES(location),admin_instructions=VALUES(admin_instructions),updated_at=NOW()`,[rows[0].id,orderNo,rows[0].customer_id,`Install ${specs.product||'sign board'} for order ${orderNo}`,JSON.stringify(location),data.technicianId?'technician_assigned':'unassigned',rows[0].admin_notes]);
+      const ticket=(await client.query('SELECT id FROM service_tickets WHERE order_id=$1',[rows[0].id])).rows[0];
+      const job=(await client.query('SELECT id FROM technician_jobs WHERE ticket_id=$1 FOR UPDATE',[ticket.id])).rows[0];
+      if(job)await client.query(`UPDATE technician_jobs SET technician_id=$2,status=CASE WHEN $3 THEN 'assigned' ELSE status END,scheduled_at=COALESCE(scheduled_at,NOW()),updated_at=NOW() WHERE id=$1`,[job.id,data.technicianId,assignmentChanged&&Boolean(data.technicianId)]);
+      else if(data.technicianId)await client.query("INSERT INTO technician_jobs(ticket_id,technician_id,status,scheduled_at) VALUES($1,$2,'assigned',NOW())",[ticket.id,data.technicianId]);
+      if(assignmentChanged&&data.technicianId){
+        await client.query(`INSERT INTO notifications(user_id,channel,title,body,event_key,data)
+          SELECT user_id,'push','New installation job assigned',$2,'technician.job_assigned',$3 FROM technicians WHERE id=$1`,[data.technicianId,`Installation for order ${orderNo} has been assigned to you.`,JSON.stringify({orderNo,jobId:job?.id||null})]);
+      }
+    }
+    const title=assignmentChanged?(data.technicianId?'Installation technician assigned':'Installation technician unassigned'):'Order updated';
+    await client.query("INSERT INTO notifications(user_id,channel,title,body) VALUES($1,'push',$2,$3)",[rows[0].user_id,title,assignmentChanged&&data.technicianId?`A technician has been assigned to order ${orderNo}.`:`Order ${orderNo} has been updated.`]);
+    await client.query('COMMIT');
+  }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
+  await audit(user.id,'order.update','order',current.databaseId,data);
+  return getOrder(orderNo,user);
+}
+async function reviewOrderDesign(orderNo,designId,data,user){const status={approve:'approved',reject:'rejected',request_modification:'modification_requested'}[data.action];const target=`FROM design_requests d JOIN orders o ON d.order_id=o.id JOIN customers c ON o.customer_id=c.id WHERE o.order_no=$1 AND d.id=$2`;await getPool().query(`UPDATE design_requests d JOIN orders o ON d.order_id=o.id SET d.status=$3,d.requirements=JSON_SET(COALESCE(d.requirements,JSON_OBJECT()),'$.adminReviewNotes',$4),d.updated_at=NOW() WHERE o.order_no=$1 AND d.id=$2`,[orderNo,designId,status,data.notes||'']);const {rows}=await getPool().query(`SELECT d.id,d.status,c.user_id ${target}`,[orderNo,designId]);if(!rows[0])throw Object.assign(new Error('Design request not found for this order'),{status:404});await notifyCustomer(rows[0].user_id,'design.reviewed','Design review updated',`Design request #${designId} for order ${orderNo}: ${status.replaceAll('_',' ')}`,{orderNo,designId,status});await audit(user.id,`design.${data.action}`,'design_request',designId,{orderNo,notes:data.notes});delete rows[0].user_id;return rows[0];}
+async function listServices(user, query={}) { const params = []; let where = ''; if (user.role === 'customer') { where = 'WHERE u.email=$1'; params.push(user.email); } const limit=Math.min(100,Math.max(1,Number(query.limit)||100));params.push(limit);const { rows } = await getPool().query(`SELECT s.ticket_no AS id,u.name AS customer,s.category,s.description,s.location,s.photos,s.priority,s.status,s.created_at AS "createdAt",u.email AS "createdBy" FROM service_tickets s JOIN customers c ON c.id=s.customer_id JOIN users u ON u.id=c.user_id ${where} ORDER BY s.created_at DESC LIMIT $${params.length}`, params); return rows; }
+async function createService(user,data,ticketNo){const admin=['super_admin','admin'].includes(user.role);if(admin&&!data.customerId)throw Object.assign(new Error('customerId is required when an admin creates a service request'),{status:422});const customer=(await getPool().query(admin?'SELECT id,user_id FROM customers WHERE id=$1':'SELECT id,user_id FROM customers WHERE user_id=$1',[admin?data.customerId:user.id])).rows[0];if(!customer)throw Object.assign(new Error('Customer profile not found'),{status:422});const categoryActive=(await getPool().query('SELECT 1 FROM service_categories WHERE name=$1 AND status=TRUE',[data.category])).rowCount;if(!categoryActive)throw Object.assign(new Error('Active service problem category not found'),{status:422});const payload={...data,customerId:undefined};const {insertId}=await getPool().query(`INSERT INTO service_tickets(ticket_no,customer_id,category,description,location,photos,priority,status) VALUES($1,$2,$3,$4,$5,$6,$7,'submitted')`,[ticketNo,customer.id,data.category,data.description,JSON.stringify({address:data.address,latitude:data.latitude,longitude:data.longitude}),JSON.stringify(data.photos||[]),data.priority]);const {rows}=await getPool().query('SELECT id,created_at FROM service_tickets WHERE id=$1',[insertId]);await notifyCustomer(customer.user_id,'service.submitted','Service request submitted',`Service request ${ticketNo} has been submitted.`,{ticketNo});await audit(user.id,'service.create','service_ticket',rows[0].id,{ticketNo,customerId:customer.id});return{...payload,id:ticketNo,status:'submitted',createdAt:rows[0].created_at,message:'Your service request has been submitted.'};}
+async function updateService(ticketNo, data, user) { await getPool().query('UPDATE service_tickets SET status=COALESCE($2,status),priority=COALESCE($3,priority),updated_at=NOW() WHERE ticket_no=$1', [ticketNo, data.status, data.priority]); const { rows } = await getPool().query('SELECT s.ticket_no AS id,s.status,s.priority,c.user_id FROM service_tickets s JOIN customers c ON s.customer_id=c.id WHERE s.ticket_no=$1', [ticketNo]); if (!rows[0]) throw Object.assign(new Error('Service ticket not found'), { status: 404 });const titles={technician_assigned:'Technician assigned',completed:'Service completed',closed:'Service completed'};if(titles[data.status])await getPool().query("INSERT INTO notifications(user_id,channel,title,body) VALUES($1,'push',$2,$3)",[rows[0].user_id,titles[data.status],`Service ${ticketNo}: ${data.status.replaceAll('_',' ')}`]);delete rows[0].user_id; await audit(user.id, 'service.update', 'service_ticket', null, { ticketNo, ...data }); return rows[0]; }
+async function listJobs(user) { const params = []; let where = ''; if (user.role === 'technician') { where = 'WHERE tu.email=$1'; params.push(user.email); } const { rows } = await getPool().query(`SELECT j.id,s.ticket_no AS "ticketId",cu.name AS customer,s.category,s.priority,j.status,s.location,tu.name AS technician,j.scheduled_at AS "scheduledAt" FROM technician_jobs j JOIN service_tickets s ON s.id=j.ticket_id JOIN customers c ON c.id=s.customer_id JOIN users cu ON cu.id=c.user_id LEFT JOIN technicians t ON t.id=j.technician_id LEFT JOIN users tu ON tu.id=t.user_id ${where} ORDER BY j.scheduled_at IS NULL,j.scheduled_at,j.id DESC`, params); return rows; }
+async function getJob(id,user){const params=[id],ownership=user.role==='technician'?(params.push(user.id),'AND t.user_id=$2'):'';const row=(await getPool().query(`SELECT j.id,j.status,j.scheduled_at AS "scheduledAt",j.evidence,j.customer_confirmation AS "customerConfirmation",s.ticket_no AS "ticketId",s.category,s.description,s.priority,s.location,s.order_id AS "orderId",c.id AS "customerId",cu.name AS customer,tu.name AS technician FROM technician_jobs j JOIN service_tickets s ON s.id=j.ticket_id JOIN customers c ON c.id=s.customer_id JOIN users cu ON cu.id=c.user_id LEFT JOIN technicians t ON t.id=j.technician_id LEFT JOIN users tu ON tu.id=t.user_id WHERE j.id=$1 ${ownership}`,params)).rows[0];if(!row)throw Object.assign(new Error('Job not found'),{status:404});const [history,photos]=await Promise.all([getPool().query('SELECT status,notes,created_by AS "createdBy",created_at AS "createdAt" FROM job_status_history WHERE job_id=$1 ORDER BY id',[id]),getPool().query('SELECT id,photo_type AS "photoType",storage_key AS "storageKey",mime_type AS "mimeType",created_at AS "createdAt" FROM job_photos WHERE job_id=$1 ORDER BY id',[id])]);return{...row,history:history.rows,photos:photos.rows};}
+async function updateJobStatus(id,data,user){const transitions={assigned:'accepted',accepted:'on_the_way',on_the_way:'reached_location',reached_location:'inspection_started',inspection_started:'work_in_progress',work_in_progress:'completed'},client=await getPool().connect();let result,target,previousStatus;try{await client.query('BEGIN');const params=[id],ownership=user.role==='technician'?(params.push(user.id),'AND EXISTS (SELECT 1 FROM technicians t WHERE t.id=j.technician_id AND t.user_id=$2)'):'';const current=(await client.query(`SELECT j.status FROM technician_jobs j WHERE j.id=$1 ${ownership} FOR UPDATE`,params)).rows[0];if(!current)throw Object.assign(new Error('Job not found'),{status:404});previousStatus=current.status;if(transitions[current.status]!==data.status)throw Object.assign(new Error(`Job must move from ${current.status} to ${transitions[current.status]}`),{status:409});if(data.status==='completed'&&!/^\d{4,6}$/.test(data.customerOtp||''))throw Object.assign(new Error('Valid customer OTP required'),{status:422});await client.query('UPDATE technician_jobs SET status=$2,customer_confirmation=COALESCE($3,customer_confirmation),updated_at=NOW() WHERE id=$1',[id,data.status,data.customerOtp?JSON.stringify({otpConfirmed:true}):null]);result=(await client.query('SELECT * FROM technician_jobs WHERE id=$1',[id])).rows[0];await client.query('UPDATE service_tickets SET status=$2,updated_at=NOW() WHERE id=(SELECT ticket_id FROM technician_jobs WHERE id=$1)',[id,data.status]);await client.query('INSERT INTO job_status_history(job_id,status,notes,created_by) VALUES($1,$2,$3,$4)',[id,data.status,data.notes,user.id]);target=(await client.query('SELECT c.user_id,s.ticket_no FROM technician_jobs j JOIN service_tickets s ON s.id=j.ticket_id JOIN customers c ON c.id=s.customer_id WHERE j.id=$1',[id])).rows[0];await client.query('COMMIT');}catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}const events={on_the_way:['service.technician_on_the_way','Technician on the way'],reached_location:['service.technician_reached','Technician reached'],inspection_started:['service.work_started','Work started'],completed:['service.work_completed','Work completed']};if(target&&events[data.status])await notifyCustomer(target.user_id,events[data.status][0],events[data.status][1],`Service ${target.ticket_no}: ${data.status.replaceAll('_',' ')}`,{ticketNo:target.ticket_no,status:data.status});await audit(user.id,'job.status','technician_job',id,{from:previousStatus,to:data.status});return result;}
+async function calculatePrice(data) {
+  const configured=(await getPool().query(`SELECT rule_type,amount FROM pricing_rules WHERE product_id IS NULL AND active`)).rows.reduce((all,row)=>({...all,[row.rule_type]:Number(row.amount)}),{});
+  const product=(await getPool().query(`SELECT p.pricing_method,COALESCE((SELECT amount FROM pricing_rules WHERE product_id=p.id AND active ORDER BY id DESC LIMIT 1),NULLIF(p.base_price,0),$2) rate FROM products p WHERE p.name=$1 AND p.status=TRUE`,[data.product,configured.base||0])).rows[0];
+  if(!product) throw Object.assign(new Error('Active sign board type not found'),{status:422});
+  const material=(await getPool().query('SELECT price_per_sqft price,pricing_method FROM materials WHERE name=$1 AND status=TRUE',[data.material||''])).rows[0];
+  const lighting=(await getPool().query('SELECT price_per_sqft price,pricing_method FROM lighting_options WHERE name=$1 AND status=TRUE',[data.lighting||''])).rows[0];
+  if(data.material&&!material)throw Object.assign(new Error('Active material not found'),{status:422});
+  if(data.lighting&&!lighting)throw Object.assign(new Error('Active lighting option not found'),{status:422});
+  const optionPrice=async(table,value,fallback)=>{if(!value)return 0;if(typeof value==='string')return Number((await getPool().query(`SELECT price FROM ${table} WHERE name=$1 AND status=TRUE`,[value])).rows[0]?.price||0);return Number(fallback||0);};
+  const factors={ft:1,in:1/12,cm:0.0328084,m:3.28084},quantity=Number(data.quantity),area=data.length*factors[data.unit||'ft']*data.width*factors[data.unit||'ft']*quantity;
+  const cost=(rate,method)=>Number(rate||0)*(method==='unit'?quantity:method==='fixed'?1:area);
+  const productCost=cost(product.rate,product.pricing_method),materialCost=cost(material?.price??configured.material,material?.pricing_method||'sqft'),lightingCost=cost(lighting?.price??configured.lighting,lighting?.pricing_method||'sqft');
+  // LED watt cost: watt value × area × price per watt (default ₹8 per watt per sqft)
+  const ledWattVal = data.ledWatt ? parseInt(String(data.ledWatt).replace(/[^0-9]/g,''),10)||0 : 0;
+  const pricePerWatt = Number(configured.watt_cost||8);
+  const wattCost = ledWattVal > 0 ? Math.round(ledWattVal * area * pricePerWatt) : 0;
+  const installation=await optionPrice('installation_options',data.installation,configured.installation),accessories=await optionPrice('accessories',data.accessories,configured.accessories);
+  const transportation=data.transportation?Number(configured.transportation||0):0,design=data.design?Number(configured.design||0):0,electricalWork=data.electricalWork?Number(configured.electricalWork||0):0,mountingStructure=data.mountingStructure?Number(configured.mountingStructure||0):0,customization=data.customization?Number(configured.customization||0):0;
+  const gross=productCost+materialCost+lightingCost+wattCost+installation+transportation+design+electricalWork+mountingStructure+accessories+customization,discount=Math.min(Number(data.discount??configured.discount??0),gross),subtotal=Math.max(Number(configured.minimum||0),gross-discount),gst=Math.round(subtotal*Number(configured.gst||0)/100);
+  return {area:Number(area.toFixed(2)),areaUnit:'sqft',productCost,materialCost,lightingCost,wattCost,ledWatt:data.ledWatt||null,installation,transportation,design,electricalWork,mountingStructure,accessories,customization,discount,gst,estimatedPrice:Math.round(subtotal+gst),label:'Estimated Price',notice:'Final quotation may change after Admin review/measurement.'};
+}
+
+async function listAdminCustomers(query={}) { return listCatalog('customers',query); }
+async function createAdminCustomer(data,user) { const client=await getPool().connect();try{await client.query('BEGIN');const role=(await client.query("SELECT id FROM roles WHERE name='customer' LIMIT 1")).rows[0];if(!role)throw Object.assign(new Error('Customer role is not configured'),{status:422});const passwordHash=await bcrypt.hash(data.password||`SignFix@${Date.now()}`,10);const userId=(await client.query('INSERT INTO users(role_id,name,email,mobile,password_hash,status) VALUES($1,$2,LOWER($3),$4,$5,$6)',[role.id,data.name,data.email,data.mobile||null,passwordHash,data.status||'active'])).insertId;const created=(await client.query('SELECT id,name,email,mobile,status,created_at AS "createdAt" FROM users WHERE id=$1',[userId])).rows[0];const customerId=(await client.query('INSERT INTO customers(user_id,company_name,payments_enabled) VALUES($1,$2,$3)',[created.id,data.companyName||null,Boolean(data.paymentsEnabled)])).insertId;const customer=(await client.query('SELECT id,company_name AS company,payments_enabled AS "paymentsEnabled" FROM customers WHERE id=$1',[customerId])).rows[0];await client.query('COMMIT');await audit(user.id,'customer.create','customer',customer.id,{email:data.email});return {...created,...customer};}catch(error){await client.query('ROLLBACK');if(error.code==='ER_DUP_ENTRY')throw Object.assign(new Error('A customer with this email already exists'),{status:409});throw error;}finally{client.release();} }
+async function getAdminCustomer(id) { const base=(await getPool().query('SELECT c.id,c.user_id AS "userId",u.name,u.email,u.mobile,u.status,u.created_at AS "createdAt",c.company_name AS company,c.payments_enabled AS "paymentsEnabled" FROM customers c JOIN users u ON u.id=c.user_id WHERE c.id=$1',[id])).rows[0];if(!base)throw Object.assign(new Error('Customer not found'),{status:404});const [addresses,orders,quotations,services,payments,conversations]=await Promise.all([getPool().query('SELECT id,label,address_line AS "addressLine",city,state,pincode,is_default AS "isDefault" FROM customer_addresses WHERE customer_id=$1 ORDER BY is_default DESC,id',[id]),getPool().query('SELECT order_no AS "orderNo",estimated_price AS "estimatedPrice",status,created_at AS "createdAt" FROM orders WHERE customer_id=$1 ORDER BY created_at DESC',[id]),getPool().query('SELECT q.quotation_no AS "quotationNo",q.final_amount AS "finalAmount",q.status,q.valid_until AS "validUntil" FROM quotations q JOIN orders o ON o.id=q.order_id WHERE o.customer_id=$1 ORDER BY q.id DESC',[id]),getPool().query('SELECT ticket_no AS "ticketNo",category,description,status,created_at AS "createdAt" FROM service_tickets WHERE customer_id=$1 ORDER BY created_at DESC',[id]),getPool().query('SELECT p.id,p.amount,p.status,p.reference,p.created_at AS "createdAt" FROM payments p JOIN quotations q ON q.id=p.quotation_id JOIN orders o ON o.id=q.order_id WHERE o.customer_id=$1 ORDER BY p.id DESC',[id]),getPool().query('SELECT id,question,response,escalation_status AS "escalationStatus",created_at AS "createdAt" FROM ai_conversations WHERE user_id=$1 ORDER BY created_at DESC',[base.userId])]);return {...base,addresses:addresses.rows,orders:orders.rows,quotations:quotations.rows,services:services.rows,payments:base.paymentsEnabled?payments.rows:[],aiConversations:conversations.rows}; }
+async function updateAdminCustomer(id,data,user){const current=await getAdminCustomer(id);await getPool().query('UPDATE users SET name=COALESCE($2,name),email=COALESCE(LOWER($3),email),mobile=COALESCE($4,mobile),status=COALESCE($5,status),updated_at=NOW() WHERE id=$1',[current.userId,data.name,data.email,data.mobile,data.status]);await getPool().query('UPDATE customers SET company_name=COALESCE($2,company_name),payments_enabled=COALESCE($3,payments_enabled) WHERE id=$1',[id,data.companyName,data.paymentsEnabled]);await audit(user.id,'customer.update','customer',id,data);return getAdminCustomer(id);}
+async function disableAdminCustomer(id,user){const current=await getAdminCustomer(id);await getPool().query("UPDATE users SET status='disabled',updated_at=NOW() WHERE id=$1",[current.userId]);await audit(user.id,'customer.disable','customer',id,{});return {id:Number(id),status:'disabled'};}
+async function dashboard() { const { rows } = await getPool().query(`SELECT (SELECT COUNT(*) FROM customers) customers,(SELECT COUNT(*) FROM orders) orders,(SELECT COUNT(*) FROM orders WHERE created_at>=CURRENT_DATE - INTERVAL 30 DAY) AS "newOrders",(SELECT COUNT(*) FROM quotations) quotations,(SELECT COUNT(*) FROM quotations WHERE status IN ('draft','sent','viewed','change_requested')) AS "pendingQuotations",(SELECT COUNT(*) FROM service_tickets) AS "serviceTickets",(SELECT COUNT(*) FROM service_tickets WHERE status NOT IN ('closed','completed')) AS "activeServices",(SELECT COUNT(*) FROM technicians) technicians,(SELECT COUNT(*) FROM technician_jobs) jobs,(SELECT COUNT(*) FROM technician_jobs WHERE status='completed') AS "completedJobs",(SELECT COUNT(*) FROM technician_jobs WHERE status<>'completed') AS "pendingJobs",(SELECT COUNT(*) FROM ai_leads) leads,(SELECT COUNT(*) FROM reviews) reviews,(SELECT COALESCE(SUM(amount-refunded_amount),0) FROM payments WHERE status IN ('captured','partially_refunded')) revenue`); return rows[0]; }
+async function report(type, query={}) { const supported = ['sales','orders','quotations','services','technicians','customers','products','locations','revenue','pending-jobs','completed-jobs','ai-leads','conversion-rate']; if (!supported.includes(type)) throw Object.assign(new Error('Unsupported report'), { status: 404 }); const summary=await dashboard();return { type,filters:{from:query.from||null,to:query.to||null},generatedAt:new Date().toISOString(),summary }; }
+async function registerDeviceToken(userId, token, platform) { await getPool().query(`INSERT INTO device_tokens(user_id,token,platform,last_seen_at) VALUES($1,$2,$3,NOW()) ON DUPLICATE KEY UPDATE user_id=VALUES(user_id),platform=VALUES(platform),last_seen_at=NOW(),active=TRUE`,[userId,token,platform]); }
+async function notificationRecipients(audience) { const roles={customers:['customer'],technicians:['technician'],admins:['super_admin','admin','sales_manager','service_manager','technician_manager']};const params=[];let where="dt.active=TRUE AND u.status='active'";if(roles[audience]){params.push(roles[audience]);where+=' AND r.name IN ($1)';}return (await getPool().query(`SELECT DISTINCT dt.token,u.id AS "userId" FROM device_tokens dt JOIN users u ON u.id=dt.user_id JOIN roles r ON r.id=u.role_id WHERE ${where}`,params)).rows; }
+async function createBulkNotifications(recipients, message, user) { if(!recipients.length)return;const ids=[...new Set(recipients.map(row=>row.userId))];await getPool().query('INSERT INTO notifications(user_id,channel,title,body) VALUES $1',[ids.map(id=>[id,message.channel,message.title,message.body])]);await audit(user.id,'notification.send','notification',null,{recipients:ids.length,title:message.title}); }
+async function audit(userId, action, entityType, entityId, metadata) { await getPool().query('INSERT INTO audit_logs(user_id,action,entity_type,entity_id,metadata) VALUES($1,$2,$3,$4,$5)', [userId, action, entityType, entityId, JSON.stringify(metadata)]); }
+module.exports = { isConfigured, getPool, health, ensureAuthSchema, findUserByEmail, listCatalog, createCatalog, updateCatalog, deleteCatalog, listOrders, createOrder, getOrder, updateOrder, updateOrderStatus, reviewOrderDesign, listServices, createService, updateService, listJobs, getJob, updateJobStatus, calculatePrice, listAdminCustomers, createAdminCustomer, getAdminCustomer, updateAdminCustomer, disableAdminCustomer, dashboard, report, registerDeviceToken, notificationRecipients, createBulkNotifications, getCustomerWallet, getDiscountedProducts, getDiscountedSliderImages };

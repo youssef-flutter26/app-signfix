@@ -1,0 +1,11 @@
+const router = require('express').Router();
+const controller = require('../controllers/catalogController');
+const { authenticate, permit } = require('../../middleware/auth');
+const permissionModules = { products:'product', categories:'product', materials:'product', lighting:'product', accessories:'product', 'installation-options':'product', 'pricing-rules':'pricing', 'service-categories':'service', customers:'customer', technicians:'technician', quotations:'quotation', assets:'asset', reviews:'service', notifications:'notifications', 'notification-templates':'notifications', 'ai-leads':'ai', 'ai-knowledge':'ai', 'ai-conversations':'ai', 'design-concepts':'ai', settings:'settings', 'audit-logs':'audit', roles:'settings', permissions:'settings' };
+const permission = action => req => `${permissionModules[req.params.resource] || req.params.resource}.${action}`;
+router.use(authenticate);
+router.get('/:resource', permit(permission('view')), controller.list);
+router.post('/:resource', permit(permission('create')), controller.create);
+router.patch('/:resource/:id', permit(permission('update')), controller.update);
+router.delete('/:resource/:id', permit(permission('delete')), controller.remove);
+module.exports = router;

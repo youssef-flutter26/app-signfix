@@ -1,0 +1,224 @@
+{
+  "info": {
+    "_postman_id": "cb9b0b2e-c8af-4ffc-b003-51a7af000001",
+    "name": "SignFix - Customer & Technician Auth",
+    "description": "API checks for customer signup/login and technician email-OTP signup/login. Set the baseUrl and test accounts before running. Technician signup requires a real inbox for the email OTP; after signup an admin must activate the technician before the successful-login request.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "https://signfix.me", "type": "string" },
+    { "key": "customerName", "value": "Postman Customer", "type": "string" },
+    { "key": "customerEmail", "value": "customer-test@example.com", "type": "string" },
+    { "key": "customerMobile", "value": "+919876540001", "type": "string" },
+    { "key": "customerPassword", "value": "CustomerTest@123", "type": "string" },
+    { "key": "customerToken", "value": "", "type": "string" },
+    { "key": "technicianName", "value": "Postman Technician", "type": "string" },
+    { "key": "technicianEmail", "value": "replace-with-a-real-inbox@example.com", "type": "string" },
+    { "key": "technicianMobile", "value": "+919876540002", "type": "string" },
+    { "key": "technicianPassword", "value": "TechnicianTest@123", "type": "string" },
+    { "key": "technicianDateOfJoining", "value": "2026-10-13", "type": "string" },
+    { "key": "technicianWorkLocation", "value": "Lucknow", "type": "string" },
+    { "key": "technicianOtp", "value": "", "type": "string" },
+    { "key": "technicianVerificationToken", "value": "", "type": "string" },
+    { "key": "technicianToken", "value": "", "type": "string" }
+  ],
+  "item": [
+    {
+      "name": "Customer",
+      "item": [
+        {
+          "name": "1. Customer signup",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"{{customerName}}\",\n  \"email\": \"{{customerEmail}}\",\n  \"mobile\": \"{{customerMobile}}\",\n  \"password\": \"{{customerPassword}}\",\n  \"companyName\": \"Postman test\",\n  \"address\": \"Not provided\",\n  \"city\": \"Lucknow\",\n  \"state\": \"Uttar Pradesh\",\n  \"pincode\": \"226001\"\n}"
+            },
+            "url": "{{baseUrl}}/api/auth/register",
+            "description": "Creates an active customer account. Customer signup does not require OTP. Use a new email and mobile each time; duplicate accounts return 409."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Customer signup returns 201', function () { pm.response.to.have.status(201); });",
+                  "const body = pm.response.json();",
+                  "pm.test('Customer signup does not require OTP', function () { pm.expect(body.verificationRequired).to.eql(false); });",
+                  "pm.test('Signup confirms account can sign in', function () { pm.expect(body.message).to.include('sign in'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2. Customer login",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{customerEmail}}\",\n  \"password\": \"{{customerPassword}}\",\n  \"portal\": \"customer\"\n}"
+            },
+            "url": "{{baseUrl}}/api/auth/login",
+            "description": "Run after customer signup. Saves customerToken for later authenticated API tests."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Customer login returns 200', function () { pm.response.to.have.status(200); });",
+                  "const body = pm.response.json();",
+                  "pm.test('Customer login returns a token and customer role', function () { pm.expect(body.token).to.be.a('string').and.not.empty; pm.expect(body.user.role).to.eql('customer'); });",
+                  "if (body.token) pm.collectionVariables.set('customerToken', body.token);"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Technician",
+      "description": "Run requests in order. Read the OTP from the technicianEmail inbox, set the technicianOtp collection variable, and then continue. After registration, an admin must activate the account before the final login request can return 200.",
+      "item": [
+        {
+          "name": "1. Send technician email OTP",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{technicianEmail}}\",\n  \"mobile\": \"{{technicianMobile}}\"\n}"
+            },
+            "url": "{{baseUrl}}/api/auth/technician/register/send-otp",
+            "description": "Requires working server SMTP settings and a real email inbox. Use a new email/mobile not already registered."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Technician OTP request returns 200', function () { pm.response.to.have.status(200); });",
+                  "const body = pm.response.json();",
+                  "pm.test('Response confirms email delivery target', function () { pm.expect(body.message).to.include('email address'); pm.expect(body.maskedEmail).to.be.a('string').and.not.empty; });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2. Verify technician email OTP",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{technicianEmail}}\",\n  \"otp\": \"{{technicianOtp}}\"\n}"
+            },
+            "url": "{{baseUrl}}/api/auth/technician/register/verify-otp",
+            "description": "Before sending this request, copy the 6-digit OTP from the inbox into the technicianOtp collection variable. OTP expires in 10 minutes and allows up to five attempts."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Technician OTP verification returns 200', function () { pm.response.to.have.status(200); });",
+                  "const body = pm.response.json();",
+                  "pm.test('Verification returns a registration proof token', function () { pm.expect(body.verified).to.eql(true); pm.expect(body.verificationToken).to.be.a('string').and.not.empty; });",
+                  "if (body.verificationToken) pm.collectionVariables.set('technicianVerificationToken', body.verificationToken);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "3. Complete technician signup",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"full_name\": \"{{technicianName}}\",\n  \"email\": \"{{technicianEmail}}\",\n  \"mobile\": \"{{technicianMobile}}\",\n  \"date_of_joining\": \"{{technicianDateOfJoining}}\",\n  \"work_location\": \"{{technicianWorkLocation}}\",\n  \"skills\": [\"Installation\"],\n  \"password\": \"{{technicianPassword}}\",\n  \"registration_verification_token\": \"{{technicianVerificationToken}}\",\n  \"terms_accepted\": true\n}"
+            },
+            "url": "{{baseUrl}}/api/auth/technician/register",
+            "description": "Creates a verified technician account that remains pending admin approval."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Technician signup returns 201', function () { pm.response.to.have.status(201); });",
+                  "const body = pm.response.json();",
+                  "pm.test('New technician is pending admin approval', function () { pm.expect(body.status).to.eql('PENDING_APPROVAL'); pm.expect(body.message).to.include('pending admin approval'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "4. Technician login before approval (expected 403)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{technicianEmail}}\",\n  \"password\": \"{{technicianPassword}}\",\n  \"portal\": \"technician\"\n}"
+            },
+            "url": "{{baseUrl}}/api/auth/login",
+            "description": "A 403 response with 'pending admin approval' is the correct behavior until an admin activates the account."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Pending technician login is blocked with 403', function () { pm.response.to.have.status(403); });",
+                  "const body = pm.response.json();",
+                  "pm.test('Response explains admin approval is pending', function () { pm.expect(body.error).to.include('pending admin approval'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "5. Technician login after admin approval",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{technicianEmail}}\",\n  \"password\": \"{{technicianPassword}}\",\n  \"portal\": \"technician\"\n}"
+            },
+            "url": "{{baseUrl}}/api/auth/login",
+            "description": "Activate this technician in the admin panel first (status active), then run this request to verify successful login. Saves technicianToken."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Approved technician login returns 200', function () { pm.response.to.have.status(200); });",
+                  "const body = pm.response.json();",
+                  "pm.test('Technician login returns a token and technician role', function () { pm.expect(body.token).to.be.a('string').and.not.empty; pm.expect(body.user.role).to.eql('technician'); });",
+                  "if (body.token) pm.collectionVariables.set('technicianToken', body.token);"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

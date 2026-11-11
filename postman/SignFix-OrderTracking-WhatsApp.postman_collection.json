@@ -1,0 +1,241 @@
+{
+  "info": {
+    "_postman_id": "9e0d9b6a-1a2b-4c3d-8e0a-signfixordertrack",
+    "name": "SignFix - Order Tracking & WhatsApp APIs",
+    "description": "Test flow for: (1) signup with WhatsApp OTP, (2) placing an order which triggers a WhatsApp text message, (3) admin changing order status which triggers a WhatsApp status update, (4) the customer-facing order tracking timeline. Run folders in order, top to bottom. Set baseUrl to your running server (default http://localhost:4000). WhatsApp sending itself only actually delivers when WHATSAPP_ACCESS_TOKEN / WHATSAPP_PHONE_NUMBER_ID are configured in the server .env — without them the API still responds normally and the message is logged as 'skipped' in order_whatsapp_logs / whatsapp_notification_logs.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [{ "key": "token", "value": "{{customerToken}}", "type": "string" }]
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:4000", "type": "string" },
+    { "key": "adminEmail", "value": "admin@signfix.in", "type": "string" },
+    { "key": "adminPassword", "value": "SignFix@123", "type": "string" },
+    { "key": "adminToken", "value": "", "type": "string" },
+    { "key": "customerEmail", "value": "trackuser@signfix.in", "type": "string" },
+    { "key": "customerMobile", "value": "9876543210", "type": "string" },
+    { "key": "customerPassword", "value": "SignFix@123!", "type": "string" },
+    { "key": "customerToken", "value": "", "type": "string" },
+    { "key": "registeredIdentifier", "value": "", "type": "string" },
+    { "key": "registrationOtp", "value": "", "type": "string" },
+    { "key": "orderNo", "value": "", "type": "string" }
+  ],
+  "item": [
+    {
+      "name": "1 - Signup with WhatsApp OTP",
+      "item": [
+        {
+          "name": "Register (sends WhatsApp OTP)",
+          "auth": { "type": "noauth" },
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Track Test User\",\n  \"mobile\": \"{{customerMobile}}\",\n  \"email\": \"{{customerEmail}}\",\n  \"password\": \"{{customerPassword}}\",\n  \"companyName\": \"Test Signage Co\",\n  \"address\": \"12 MG Road\",\n  \"city\": \"Lucknow\",\n  \"state\": \"Uttar Pradesh\",\n  \"pincode\": \"226001\"\n}"
+            },
+            "url": "{{baseUrl}}/api/auth/register"
+          },
+          "event": [{
+            "listen": "test",
+            "script": {
+              "exec": [
+                "pm.test('Registration accepted', () => pm.response.to.have.status(201));",
+                "const body = pm.response.json();",
+                "if (body.identifier) pm.collectionVariables.set('registeredIdentifier', body.identifier);",
+                "if (body.developmentOtp) pm.collectionVariables.set('registrationOtp', body.developmentOtp);",
+                "pm.test('WhatsApp OTP was queued', () => pm.expect(body.verificationRequired).to.eql(true));"
+              ]
+            }
+          }]
+        },
+        {
+          "name": "Verify Registration OTP",
+          "auth": { "type": "noauth" },
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"identifier\": \"{{registeredIdentifier}}\",\n  \"otp\": \"{{registrationOtp}}\",\n  \"purpose\": \"verify_registration\"\n}"
+            },
+            "url": "{{baseUrl}}/api/auth/verify-otp"
+          },
+          "event": [{
+            "listen": "test",
+            "script": { "exec": ["pm.test('OTP verified, account activated', () => { pm.response.to.have.status(200); pm.expect(pm.response.json().verified).to.eql(true); });"] }
+          }]
+        },
+        {
+          "name": "Resend Registration OTP (if expired)",
+          "auth": { "type": "noauth" },
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"identifier\": \"{{registeredIdentifier}}\",\n  \"purpose\": \"verify_registration\"\n}"
+            },
+            "url": "{{baseUrl}}/api/auth/resend-registration-otp"
+          },
+          "event": [{
+            "listen": "test",
+            "script": { "exec": ["const body = pm.response.json(); if (body.developmentOtp) pm.collectionVariables.set('registrationOtp', body.developmentOtp);"] }
+          }]
+        },
+        {
+          "name": "Customer Login",
+          "auth": { "type": "noauth" },
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{customerEmail}}\",\n  \"password\": \"{{customerPassword}}\",\n  \"portal\": \"customer\"\n}"
+            },
+            "url": "{{baseUrl}}/api/auth/login"
+          },
+          "event": [{
+            "listen": "test",
+            "script": {
+              "exec": [
+                "pm.test('Login succeeds', () => pm.response.to.have.status(200));",
+                "const body = pm.response.json();",
+                "if (body.token) pm.collectionVariables.set('customerToken', body.token);"
+              ]
+            }
+          }]
+        }
+      ]
+    },
+    {
+      "name": "2 - Place Order (triggers WhatsApp 'order placed' message)",
+      "item": [
+        {
+          "name": "Create Order",
+          "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{customerToken}}", "type": "string" }] },
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"product\": \"ACP Sign Board\",\n  \"length\": 8,\n  \"width\": 4,\n  \"quantity\": 1,\n  \"unit\": \"ft\",\n  \"material\": \"ACP\",\n  \"lighting\": \"LED\",\n  \"installation\": true,\n  \"address\": \"12 MG Road, Lucknow\"\n}"
+            },
+            "url": "{{baseUrl}}/api/orders"
+          },
+          "event": [{
+            "listen": "test",
+            "script": {
+              "exec": [
+                "pm.test('Order created', () => pm.response.to.have.status(201));",
+                "const body = pm.response.json();",
+                "if (body.id) pm.collectionVariables.set('orderNo', body.id);",
+                "pm.test('Order starts under_review', () => pm.expect(body.status).to.eql('under_review'));"
+              ]
+            }
+          }]
+        },
+        {
+          "name": "List My Orders",
+          "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{customerToken}}", "type": "string" }] },
+          "request": { "method": "GET", "url": "{{baseUrl}}/api/orders" },
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('Orders list loads', () => pm.response.to.have.status(200));"] } }]
+        },
+        {
+          "name": "Get Order Tracking Timeline",
+          "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{customerToken}}", "type": "string" }] },
+          "request": { "method": "GET", "url": "{{baseUrl}}/api/orders/{{orderNo}}" },
+          "event": [{
+            "listen": "test",
+            "script": {
+              "exec": [
+                "pm.test('Order detail loads', () => pm.response.to.have.status(200));",
+                "const body = pm.response.json();",
+                "pm.test('statusHistory timeline is present', () => pm.expect(body.statusHistory).to.be.an('array').that.is.not.empty);"
+              ]
+            }
+          }]
+        }
+      ]
+    },
+    {
+      "name": "3 - Admin Updates Order Status (triggers WhatsApp status message)",
+      "item": [
+        {
+          "name": "Admin Login",
+          "auth": { "type": "noauth" },
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"email\": \"{{adminEmail}}\",\n  \"password\": \"{{adminPassword}}\",\n  \"portal\": \"admin\"\n}" },
+            "url": "{{baseUrl}}/api/auth/login"
+          },
+          "event": [{
+            "listen": "test",
+            "script": {
+              "exec": [
+                "pm.test('Admin login succeeds', () => pm.response.to.have.status(200));",
+                "const body = pm.response.json();",
+                "if (body.token) pm.collectionVariables.set('adminToken', body.token);"
+              ]
+            }
+          }]
+        },
+        {
+          "name": "Update Order Status -> approved",
+          "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{adminToken}}", "type": "string" }] },
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"status\": \"approved\"\n}" },
+            "url": "{{baseUrl}}/api/orders/{{orderNo}}/status"
+          },
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('Status updated', () => { pm.response.to.have.status(200); pm.expect(pm.response.json().status).to.eql('approved'); });"] } }]
+        },
+        {
+          "name": "Update Order Status -> production",
+          "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{adminToken}}", "type": "string" }] },
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"status\": \"production\"\n}" },
+            "url": "{{baseUrl}}/api/orders/{{orderNo}}/status"
+          },
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('Status updated', () => pm.response.to.have.status(200));"] } }]
+        },
+        {
+          "name": "Check Order WhatsApp Delivery Log (admin)",
+          "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{adminToken}}", "type": "string" }] },
+          "request": { "method": "GET", "url": "{{baseUrl}}/api/orders/whatsapp-notifications/logs" },
+          "event": [{
+            "listen": "test",
+            "script": {
+              "exec": [
+                "pm.test('Log endpoint responds', () => pm.response.to.have.status(200));",
+                "const body = pm.response.json();",
+                "pm.test('Log contains entries for this order', () => pm.expect(body.data.some(row => row.orderNo === pm.collectionVariables.get('orderNo'))).to.be.true);"
+              ]
+            }
+          }]
+        },
+        {
+          "name": "Get Order Tracking Timeline (after status changes)",
+          "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{customerToken}}", "type": "string" }] },
+          "request": { "method": "GET", "url": "{{baseUrl}}/api/orders/{{orderNo}}" },
+          "event": [{
+            "listen": "test",
+            "script": {
+              "exec": [
+                "pm.test('Order detail loads', () => pm.response.to.have.status(200));",
+                "const body = pm.response.json();",
+                "pm.test('Timeline now has multiple steps', () => pm.expect(body.statusHistory.length).to.be.above(1));"
+              ]
+            }
+          }]
+        }
+      ]
+    }
+  ]
+}
