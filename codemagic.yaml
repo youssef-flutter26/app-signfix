@@ -4,8 +4,6 @@ workflows:
     instance_type: mac_mini_m2
     max_build_duration: 60
     integrations:
-      # Name of the App Store Connect API key you add in Codemagic:
-      # Teams > Personal account / Team > Integrations > Developer Portal.
       app_store_connect: codemagic
     environment:
       flutter: stable
@@ -16,10 +14,7 @@ workflows:
         bundle_identifier: com.signfix.app
       vars:
         BUNDLE_ID: "com.signfix.app"
-        # Numeric "Apple ID" of the app in App Store Connect (App Information page).
         APP_STORE_APPLE_ID: "REPLACE_WITH_APP_STORE_CONNECT_APPLE_ID"
-        # Add GOOGLE_SERVICE_INFO_PLIST as a SECRET variable in Codemagic
-        # (base64 of ios/Runner/GoogleService-Info.plist). Never commit that file's contents here.
         SHOREBIRD_TOKEN: "sb_api_RpH5else5brWnnv-mFRqqsDXCpu7nEd-A1dhuFCQ4vY"
     scripts:
       - name: Write GoogleService-Info.plist
@@ -46,9 +41,8 @@ workflows:
       - name: Build with Shorebird iOS Release
         script: |
           export PATH="$HOME/.shorebird/bin:$PATH"
-          shorebird release ios \
-            --token="$SHOREBIRD_TOKEN" \
-            --export-options-plist=/Users/builder/export_options.plist
+          shorebird login --token "$SHOREBIRD_TOKEN"
+          shorebird release ios --export-options-plist=/Users/builder/export_options.plist --release-version=1.0.0 --build-number=$BUILD_NUMBER
     artifacts:
       - build/ios/ipa/*.ipa
       - /tmp/xcodebuild_logs/*.log
