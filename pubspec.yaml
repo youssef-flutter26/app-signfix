@@ -14,6 +14,7 @@ flutter:
     - assets/images/banner1.jpeg
     - assets/images/banner2.jpeg
     - assets/images/banner3.jpeg
+    - shorebird.yaml
 
 dependencies:
   flutter:
