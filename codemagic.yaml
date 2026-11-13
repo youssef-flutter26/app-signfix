@@ -15,7 +15,6 @@ workflows:
       vars:
         BUNDLE_ID: "com.signfix.app"
         APP_STORE_APPLE_ID: "REPLACE_WITH_APP_STORE_CONNECT_APPLE_ID"
-        SHOREBIRD_TOKEN: "sb_api_RpH5else5brWnnv-mFRqqsDXCpu7nEd-A1dhuFCQ4vY"
     scripts:
       - name: Write GoogleService-Info.plist
         script: |
