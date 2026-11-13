@@ -1,57 +1,15 @@
 workflows:
-  ios-release:
-    name: iOS Release (TestFlight)
-    instance_type: mac_mini_m2
-    max_build_duration: 60
-    integrations:
-      app_store_connect: codemagic
+
+  ios-workflow:
+
+    name: iOS Workflow
+
+    # ....
+
     environment:
-      flutter: stable
-      xcode: latest
-      cocoapods: default
+
       ios_signing:
-        distribution_type: app_store
+
+        distribution_type: app_store # or: ad_hoc | development | enterprise
+
         bundle_identifier: com.signfix.app
-      vars:
-        BUNDLE_ID: "com.signfix.app"
-        APP_STORE_APPLE_ID: "REPLACE_WITH_APP_STORE_CONNECT_APPLE_ID"
-    scripts:
-      - name: Write GoogleService-Info.plist
-        script: |
-          echo "$GOOGLE_SERVICE_INFO_PLIST" | base64 --decode > ios/Runner/GoogleService-Info.plist
-      - name: Get Flutter packages
-        script: flutter pub get
-      - name: Install CocoaPods
-        script: |
-          cd ios
-          pod install
-      - name: Set up code signing
-        script: xcode-project use-profiles
-      - name: Set build number
-        script: |
-          LATEST=$(app-store-connect get-latest-testflight-build-number "$APP_STORE_APPLE_ID" || echo 0)
-          BUILD_NUMBER=$((LATEST + 1))
-          echo "BUILD_NUMBER=$BUILD_NUMBER" >> $CM_ENV
-      - name: Initialize Shorebird
-        script: |
-          curl --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/shorebirdtech/install/main/install.sh -sSf | bash
-          export PATH="$HOME/.shorebird/bin:$PATH"
-          shorebird --version
-      - name: Build with Shorebird iOS Release
-        script: |
-          export PATH="$HOME/.shorebird/bin:$PATH"
-          shorebird login --token "$SHOREBIRD_TOKEN"
-          shorebird release ios --export-options-plist=/Users/builder/export_options.plist --release-version=1.0.0 --build-number=$BUILD_NUMBER
-    artifacts:
-      - build/ios/ipa/*.ipa
-      - /tmp/xcodebuild_logs/*.log
-    publishing:
-      app_store_connect:
-        auth: integration
-        submit_to_testflight: true
-      email:
-        recipients:
-          - sapdlssrinfotech15@gmail.com
-        notify:
-          success: true
-          failure: true
